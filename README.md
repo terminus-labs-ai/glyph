@@ -15,7 +15,7 @@ Convert API documentation and source code into structured RAG knowledge bases. I
 ## Install
 
 ```bash
-git clone https://github.com/your-org/ragify.git
+git clone https://github.com/terminus-labs-ai/ragify.git
 cd ragify
 uv venv .venv && source .venv/bin/activate
 uv pip install -e .
@@ -360,7 +360,7 @@ RAGify includes an MCP (Model Context Protocol) server, enabling any MCP-compati
 {
   "mcpServers": {
     "ragify": {
-      "url": "http://192.168.50.117:8420/sse"
+      "url": "http://localhost:8420/sse"
     }
   }
 }

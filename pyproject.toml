@@ -2,6 +2,9 @@
 name = "ragify"
 version = "0.1.0"
 description = "Convert API documentation into structured RAG knowledge bases"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [{name = "Diego Camizotti"}]
 requires-python = ">=3.11"
 dependencies = [
     "aiohttp>=3.9",
@@ -17,6 +20,11 @@ dependencies = [
     "tree-sitter-go>=0.25.0",
     "mcp[cli]>=1.26.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/terminus-labs-ai/ragify"
+Repository = "https://github.com/terminus-labs-ai/ragify"
+Issues = "https://github.com/terminus-labs-ai/ragify/issues"
 
 [project.scripts]
 ragify = "ragify.__main__:cli"
