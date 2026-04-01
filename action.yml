@@ -1,0 +1,107 @@
+name: "ragify"
+description: "Ingest documentation and source code into a RAG knowledge base"
+branding:
+  icon: "database"
+  color: "purple"
+
+inputs:
+  config:
+    description: "Full ragify.yaml configuration content (supports secret interpolation via ${{ secrets.X }})"
+    required: true
+  commands:
+    description: "Space-separated ragify commands to run in order: init-db, ingest, export, stats"
+    required: false
+    default: "ingest"
+  source:
+    description: "Source name filter (-s flag for ingest/export)"
+    required: false
+    default: ""
+  version:
+    description: "Version string (-V flag for export)"
+    required: false
+    default: ""
+  python-version:
+    description: "Python version to install"
+    required: false
+    default: "3.12"
+  extra-args:
+    description: "Extra CLI flags appended to ragify commands (e.g. --verbose, --skip-embeddings)"
+    required: false
+    default: ""
+
+runs:
+  using: "composite"
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v4
+
+    - name: Install build dependencies
+      shell: bash
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq build-essential
+
+    - name: Install ragify
+      shell: bash
+      run: uv pip install --system "${{ github.action_path }}"
+
+    - name: Write ragify config
+      shell: bash
+      env:
+        RAGIFY_CONFIG_CONTENT: ${{ inputs.config }}
+      run: printf '%s\n' "$RAGIFY_CONFIG_CONTENT" > "${{ runner.temp }}/ragify.yaml"
+
+    - name: Run ragify commands
+      shell: bash
+      env:
+        RAGIFY_CONFIG: ${{ runner.temp }}/ragify.yaml
+        RAGIFY_EXTRA: ${{ inputs.extra-args }}
+        RAGIFY_SOURCE: ${{ inputs.source }}
+        RAGIFY_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+
+        for cmd in ${{ inputs.commands }}; do
+          case "$cmd" in
+            init-db)
+              echo "::group::ragify init-db"
+              ragify -c "$RAGIFY_CONFIG" $RAGIFY_EXTRA init-db
+              echo "::endgroup::"
+              ;;
+            ingest)
+              echo "::group::ragify ingest"
+              SOURCE_FLAG=""
+              [ -n "$RAGIFY_SOURCE" ] && SOURCE_FLAG="-s $RAGIFY_SOURCE"
+              ragify -c "$RAGIFY_CONFIG" $RAGIFY_EXTRA ingest $SOURCE_FLAG
+              echo "::endgroup::"
+              ;;
+            export)
+              echo "::group::ragify export"
+              SOURCE_FLAG=""
+              VERSION_FLAG=""
+              [ -n "$RAGIFY_SOURCE" ] && SOURCE_FLAG="-s $RAGIFY_SOURCE"
+              [ -n "$RAGIFY_VERSION" ] && VERSION_FLAG="-V $RAGIFY_VERSION"
+              ragify -c "$RAGIFY_CONFIG" $RAGIFY_EXTRA export $SOURCE_FLAG $VERSION_FLAG
+              echo "::endgroup::"
+              ;;
+            stats)
+              echo "::group::ragify stats"
+              ragify -c "$RAGIFY_CONFIG" $RAGIFY_EXTRA stats
+              echo "::endgroup::"
+              ;;
+            *)
+              echo "::error::Unknown ragify command: $cmd"
+              exit 1
+              ;;
+          esac
+        done
+
+    - name: Clean up config
+      if: always()
+      shell: bash
+      run: rm -f "${{ runner.temp }}/ragify.yaml"

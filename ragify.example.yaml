@@ -1,0 +1,90 @@
+database:
+  url: "postgresql://user:password@localhost:5432/ragify"
+
+embedder:
+  type: "llama"
+  url: "http://192.168.50.117:11434"
+  model: "qwen3-embedding:4b-cpu"
+  dimensions: 512
+  batch_size: 5
+
+sources:
+  - name: godot
+    version: "4.4"
+    ingestors:
+      - type: godot_xml
+        path: "/path/to/godot/doc/classes"
+      - type: html
+        base_url: "https://docs.godotengine.org/en/stable/"
+        max_pages: 500
+        delay: 0.2
+        include_patterns:
+          - "/classes/"
+          - "/tutorials/"
+        exclude_patterns:
+          - "/contributing/"
+          - "/community/"
+
+  # Python project
+  # Extracts: classes, methods, functions, decorators, docstrings
+  - name: my-python-project
+    version: "1.0"
+    ingestors:
+      - type: source_code
+        path: "/path/to/python-project"
+        extensions: [".py"]
+        include_bodies: false            # true = full function bodies, false = signatures + docstrings
+        exclude_dirs: [".git", ".github", ".vscode", ".cline", ".ruff_cache", ".pytest_cache", ".mypy_cache", "__pycache__", ".venv", "venv", ".tox", ".nox", ".eggs", "build", "dist", "tests", "benchmarks", "examples", "configs", "docs", "o11y"]
+        exclude_patterns: ["_generated", "conftest.py"]
+
+  # GDScript project
+  # Extracts: class_name/extends, funcs, signals, vars, enums, constants, ## doc comments, @export
+  - name: my-godot-project
+    version: "1.0"
+    ingestors:
+      - type: source_code
+        path: "/path/to/godot-project"
+        extensions: [".gd"]
+        include_bodies: false
+        exclude_dirs: [".godot", "addons", ".import"]
+
+  # TypeScript/TSX project
+  # Extracts: classes, interfaces, enums, type aliases, methods, arrow functions, JSDoc
+  - name: my-ts-app
+    version: "2.0"
+    ingestors:
+      - type: source_code
+        path: "/path/to/ts-project/src"
+        extensions: [".ts", ".tsx"]
+        include_bodies: false
+        exclude_dirs: ["node_modules", "dist", "build", ".next", "coverage", "__tests__", "__mocks__"]
+        exclude_patterns: [".d.ts", ".test.ts", ".spec.ts", ".test.tsx", ".spec.tsx"]
+
+  # Rust crate
+  # Extracts: structs, enums, impl methods, traits, trait impls, const/static, #[derive()], /// docs
+  - name: my-rust-crate
+    version: "0.5.0"
+    ingestors:
+      - type: source_code
+        path: "/path/to/rust-project/src"
+        extensions: [".rs"]
+        include_bodies: true
+        exclude_dirs: ["target", "benches", "examples"]
+        exclude_patterns: ["tests.rs"]
+
+  # Go module
+  # Extracts: structs, interfaces, receiver methods, functions, const/var blocks, // docs
+  - name: my-go-module
+    version: "1.2.0"
+    ingestors:
+      - type: source_code
+        path: "/path/to/go-project"
+        extensions: [".go"]
+        include_bodies: false
+        exclude_dirs: ["vendor", "testdata", "internal/mocks"]
+        exclude_patterns: ["_test.go", "_mock.go", "zz_generated"]
+
+output:
+  directory: "/home/shepard/knowledge"
+  formats:
+    - markdown
