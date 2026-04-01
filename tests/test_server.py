@@ -102,20 +102,21 @@ def mock_embedder():
 
 class TestFormatSearchResults:
     def test_basic_result(self):
-        results = [_make_chunk(similarity=0.92)]
+        results = [_make_chunk(score=0.045, retrieval="hybrid")]
         output = _format_search_results(results)
         assert "### Node2D.get_position" in output
-        assert "**Score:** 0.92" in output
+        assert "[hybrid]" in output
+        assert "0.045" in output
         assert "godot 4.6.1" in output
         assert "method" in output
 
     def test_multiple_results(self):
         results = [
-            _make_chunk(qualified_name="Node2D.get_position", similarity=0.92),
+            _make_chunk(qualified_name="Node2D.get_position", score=0.045, retrieval="hybrid"),
             _make_chunk(
                 qualified_name="Node2D.set_position",
                 heading="set_position",
-                similarity=0.89,
+                score=0.032, retrieval="keyword",
             ),
         ]
         output = _format_search_results(results)
@@ -195,26 +196,26 @@ class TestFormatSources:
 
 class TestSearchTool:
     async def test_search_returns_formatted_results(self, mock_store, mock_embedder):
-        mock_store.search = AsyncMock(return_value=[
-            _make_chunk(similarity=0.92),
-            _make_chunk(qualified_name="Node2D.set_position", heading="set_position", similarity=0.85),
+        mock_store.hybrid_search = AsyncMock(return_value=[
+            _make_chunk(score=0.045, retrieval="hybrid"),
+            _make_chunk(qualified_name="Node2D.set_position", heading="set_position", score=0.032, retrieval="keyword"),
         ])
         srv = _build_test_server(mock_store, mock_embedder)
 
         result = await srv.mcp._tool_manager.call_tool("search", {"query": "position"})
         assert "Node2D.get_position" in result
         assert "Node2D.set_position" in result
-        assert "0.92" in result
+        assert "0.045" in result
 
     async def test_search_no_results(self, mock_store, mock_embedder):
-        mock_store.search = AsyncMock(return_value=[])
+        mock_store.hybrid_search = AsyncMock(return_value=[])
         srv = _build_test_server(mock_store, mock_embedder)
 
         result = await srv.mcp._tool_manager.call_tool("search", {"query": "nonexistent"})
         assert "No results found" in result
 
     async def test_search_passes_filters_to_store(self, mock_store, mock_embedder):
-        mock_store.search = AsyncMock(return_value=[_make_chunk(similarity=0.9)])
+        mock_store.hybrid_search = AsyncMock(return_value=[_make_chunk(score=0.045, retrieval="hybrid")])
         srv = _build_test_server(mock_store, mock_embedder)
 
         await srv.mcp._tool_manager.call_tool("search", {
@@ -226,27 +227,35 @@ class TestSearchTool:
             "limit": 5,
         })
 
-        mock_store.search.assert_called_once()
-        kwargs = mock_store.search.call_args.kwargs
+        mock_store.hybrid_search.assert_called_once()
+        kwargs = mock_store.hybrid_search.call_args.kwargs
         assert kwargs["source_name"] == "godot"
         assert kwargs["source_version"] == "4.6.1"
         assert kwargs["parent_name"] == "Node2D"
         assert kwargs["limit"] == 5
 
     async def test_search_clamps_limit(self, mock_store, mock_embedder):
-        mock_store.search = AsyncMock(return_value=[])
+        mock_store.hybrid_search = AsyncMock(return_value=[])
         srv = _build_test_server(mock_store, mock_embedder)
 
         await srv.mcp._tool_manager.call_tool("search", {"query": "test", "limit": 999})
-        kwargs = mock_store.search.call_args.kwargs
+        kwargs = mock_store.hybrid_search.call_args.kwargs
         assert kwargs["limit"] == 50
 
     async def test_search_embedder_failure(self, mock_store, mock_embedder):
         mock_embedder.embed = AsyncMock(side_effect=RuntimeError("connection refused"))
+        mock_store.hybrid_search = AsyncMock(return_value=[
+            _make_chunk(score=0.016, retrieval="keyword"),
+        ])
         srv = _build_test_server(mock_store, mock_embedder)
 
         result = await srv.mcp._tool_manager.call_tool("search", {"query": "test"})
-        assert "Embedding service unavailable" in result
+        # Embedding failure falls back to keyword-only search, not an error
+        assert "Node2D.get_position" in result
+        assert "Error" not in result
+        # embedding arg should be None
+        call_args = mock_store.hybrid_search.call_args
+        assert call_args[0][1] is None
 
 
 class TestLookupTool:

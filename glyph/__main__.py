@@ -42,6 +42,7 @@ async def _init_db(config_path: str) -> None:
     store = PostgresStore(cfg.database.url, cfg.embedder.dimensions)
     await store.connect()
     await store.init_schema()
+    await store.upgrade_schema()
     await store.close()
     logger.info("Database schema initialized")
 

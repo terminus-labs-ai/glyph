@@ -55,12 +55,19 @@ CREATE TABLE IF NOT EXISTS chunks (
     embedding VECTOR({dimensions}),
     token_count INTEGER DEFAULT 0,
     chunk_index INTEGER DEFAULT 0,
-    created_at TIMESTAMPTZ DEFAULT NOW()
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    fts tsvector GENERATED ALWAYS AS (
+        setweight(to_tsvector('english', coalesce(qualified_name, '')), 'A') ||
+        setweight(to_tsvector('english', coalesce(heading, '')), 'A') ||
+        setweight(to_tsvector('english', coalesce(summary, '')), 'B') ||
+        setweight(to_tsvector('english', coalesce(content, '')), 'C')
+    ) STORED
 );
 
 CREATE INDEX IF NOT EXISTS idx_chunks_parent_type ON chunks (parent_name, chunk_type);
 CREATE INDEX IF NOT EXISTS idx_chunks_source ON chunks (source_name, source_version);
 CREATE INDEX IF NOT EXISTS idx_chunks_qualified ON chunks (qualified_name);
+CREATE INDEX IF NOT EXISTS idx_chunks_fts ON chunks USING GIN (fts);
 """
 
 VECTOR_INDEX_SQL = """
@@ -95,6 +102,23 @@ class PostgresStore:
         async with self._pool.acquire() as conn:
             await conn.execute(sql)
         logger.info("Vector index created")
+
+    async def upgrade_schema(self) -> None:
+        """Add FTS column and index. Idempotent -- safe to run multiple times."""
+        async with self._pool.acquire() as conn:
+            await conn.execute("""
+                ALTER TABLE chunks ADD COLUMN IF NOT EXISTS fts tsvector
+                    GENERATED ALWAYS AS (
+                        setweight(to_tsvector('english', coalesce(qualified_name, '')), 'A') ||
+                        setweight(to_tsvector('english', coalesce(heading, '')), 'A') ||
+                        setweight(to_tsvector('english', coalesce(summary, '')), 'B') ||
+                        setweight(to_tsvector('english', coalesce(content, '')), 'C')
+                    ) STORED
+            """)
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_chunks_fts ON chunks USING GIN (fts)
+            """)
+        logger.info("Schema upgraded: FTS column and GIN index applied")
 
     async def upsert_source(self, source: Source) -> uuid.UUID:
         async with self._pool.acquire() as conn:
@@ -225,6 +249,132 @@ class PostgresStore:
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(sql, *params)
             return [dict(r) for r in rows]
+
+    async def text_search(
+        self,
+        query: str,
+        *,
+        source_name: str | None = None,
+        source_version: str | None = None,
+        chunk_types: list[str] | None = None,
+        parent_name: str | None = None,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        conditions = []
+        params: list[Any] = [query]
+        idx = 2
+
+        if source_name:
+            conditions.append(f"source_name = ${idx}")
+            params.append(source_name)
+            idx += 1
+        if source_version:
+            conditions.append(f"source_version = ${idx}")
+            params.append(source_version)
+            idx += 1
+        if chunk_types:
+            conditions.append(f"chunk_type = ANY(${idx}::text[])")
+            params.append(chunk_types)
+            idx += 1
+        if parent_name:
+            conditions.append(f"parent_name = ${idx}")
+            params.append(parent_name)
+            idx += 1
+
+        where = (" AND " + " AND ".join(conditions)) if conditions else ""
+
+        params.append(limit)
+        sql = f"""
+            SELECT id, qualified_name, heading, summary, content, metadata,
+                   chunk_type, parent_name, source_name, source_version,
+                   ts_rank_cd(fts, websearch_to_tsquery('english', $1)) AS rank
+            FROM chunks
+            WHERE fts @@ websearch_to_tsquery('english', $1){where}
+            ORDER BY rank DESC
+            LIMIT ${idx}
+        """
+
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(sql, *params)
+            return [dict(r) for r in rows]
+
+    async def hybrid_search(
+        self,
+        query: str,
+        embedding: list[float] | None,
+        *,
+        source_name: str | None = None,
+        source_version: str | None = None,
+        chunk_types: list[str] | None = None,
+        parent_name: str | None = None,
+        limit: int = 10,
+        rrf_k: int = 60,
+        fetch_multiplier: int = 3,
+    ) -> list[dict[str, Any]]:
+        fetch_limit = limit * fetch_multiplier
+
+        # Always run FTS
+        fts_results = await self.text_search(
+            query,
+            source_name=source_name,
+            source_version=source_version,
+            chunk_types=chunk_types,
+            parent_name=parent_name,
+            limit=fetch_limit,
+        )
+
+        # Conditionally run vector search
+        vec_results: list[dict[str, Any]] = []
+        if embedding is not None:
+            chunk_type_enums = (
+                [ChunkType(ct) for ct in chunk_types] if chunk_types else None
+            )
+            vec_results = await self.search(
+                embedding,
+                source_name=source_name,
+                source_version=source_version,
+                chunk_types=chunk_type_enums,
+                parent_name=parent_name,
+                limit=fetch_limit,
+            )
+
+        # RRF fusion
+        fusion: dict[str, dict[str, Any]] = {}
+
+        for rank, doc in enumerate(fts_results):
+            key = str(doc["id"])
+            fusion[key] = {
+                "doc": doc,
+                "score": 1.0 / (rrf_k + rank + 1),
+                "in_fts": True,
+                "in_vec": False,
+            }
+
+        for rank, doc in enumerate(vec_results):
+            key = str(doc["id"])
+            if key in fusion:
+                fusion[key]["score"] += 1.0 / (rrf_k + rank + 1)
+                fusion[key]["in_vec"] = True
+            else:
+                fusion[key] = {
+                    "doc": doc,
+                    "score": 1.0 / (rrf_k + rank + 1),
+                    "in_fts": False,
+                    "in_vec": True,
+                }
+
+        # Build output
+        for entry in fusion.values():
+            if entry["in_fts"] and entry["in_vec"]:
+                entry["doc"]["retrieval"] = "hybrid"
+            elif entry["in_fts"]:
+                entry["doc"]["retrieval"] = "keyword"
+            else:
+                entry["doc"]["retrieval"] = "semantic"
+            entry["doc"]["score"] = entry["score"]
+
+        ranked = sorted(fusion.values(), key=lambda e: e["score"], reverse=True)
+        return [entry["doc"] for entry in ranked[:limit]]
 
     async def get_by_qualified_name(self, qualified_name: str) -> dict[str, Any] | None:
         async with self._pool.acquire() as conn:

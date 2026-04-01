@@ -9,7 +9,6 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 from glyph.config import load_config
-from glyph.domain.models import ChunkType
 from glyph.embedders.llama import LlamaEmbedder
 from glyph.store import PostgresStore
 
@@ -59,7 +58,7 @@ class GlyphServer:
             parent: str | None = None,
             limit: int = 10,
         ) -> str:
-            """Search the Glyph knowledge base using semantic similarity.
+            """Search the Glyph knowledge base using hybrid semantic + keyword search.
 
             Args:
                 query: Natural language search query
@@ -74,30 +73,19 @@ class GlyphServer:
 
             limit = max(1, min(limit, 50))
 
+            embedding = None
             try:
                 embeddings = await self._embedder.embed([query])
                 embedding = embeddings[0]
             except Exception as e:
-                logger.error(f"Embedding failed: {e}")
-                return (
-                    "Error: Embedding service unavailable. "
-                    "Try `lookup` or `get_context` for non-semantic queries."
-                )
+                logger.warning(f"Embedding unavailable, falling back to keyword search: {e}")
 
-            ct_filter = None
-            if chunk_types:
-                ct_filter = []
-                for ct in chunk_types:
-                    try:
-                        ct_filter.append(ChunkType(ct))
-                    except ValueError:
-                        pass
-
-            results = await self._store.search(
+            results = await self._store.hybrid_search(
+                query,
                 embedding,
                 source_name=source,
                 source_version=version,
-                chunk_types=ct_filter or None,
+                chunk_types=chunk_types,
                 parent_name=parent,
                 limit=limit,
             )
@@ -260,12 +248,14 @@ def _describe_filters(**kwargs: Any) -> str:
 def _format_search_results(results: list[dict[str, Any]]) -> str:
     lines = []
     for r in results:
-        score = r.get("similarity", 0)
-        lines.append(f"### {r['qualified_name']}")
+        score = r.get("score", 0)
+        retrieval = r.get("retrieval", "hybrid")
+        tag = f"[{retrieval}]"
+        lines.append(f"### {r['qualified_name']} {tag}")
         lines.append(
             f"**Type:** {r['chunk_type']} | "
             f"**Source:** {r['source_name']} {r['source_version']} | "
-            f"**Score:** {score:.2f}"
+            f"**Score:** {score:.3f}"
         )
         if r.get("parent_name"):
             lines.append(f"**Parent:** {r['parent_name']}")

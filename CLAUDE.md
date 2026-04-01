@@ -79,7 +79,9 @@ PostgreSQL with `uuid-ossp` + `vector` extensions. Three tables:
 - **documents**: keyed on `(source_id, path)` unique -- tracks `content_hash` for change detection
 - **chunks**: the RAG units with `qualified_name`, `summary`, `content`, `metadata` JSONB, `embedding` VECTOR, denormalized `source_name`/`source_version`
 
-Indexes: `(parent_name, chunk_type)`, `(source_name, source_version)`, `(qualified_name)`, IVFFlat on embedding.
+Indexes: `(parent_name, chunk_type)`, `(source_name, source_version)`, `(qualified_name)`, IVFFlat on embedding, GIN on `fts` tsvector.
+
+The `chunks` table has an `fts` tsvector generated column (weighted: A=qualified_name/heading, B=summary, C=content) for full-text search. `upgrade_schema()` adds it idempotently to existing databases.
 
 Schema DDL lives in `store/postgres.py` as `SCHEMA_SQL` string (uses `str.format()` -- literal braces must be escaped as `{{}}`).
 
@@ -145,11 +147,12 @@ Tutorials: `tutorials/_index.md` (tier 2) + `tutorials/name.md` (tier 3).
 `glyph serve` starts an MCP server exposing the knowledge base for runtime queries.
 
 - **Transport:** stdio (default, for Claude Code/Desktop), SSE (`-t sse`), streamable-http (`-t streamable-http`)
-- **Tools:** `search` (semantic), `lookup` (exact qualified_name), `get_context` (full parent overview), `list_sources`
+- **Tools:** `search` (hybrid semantic + keyword via RRF), `lookup` (exact qualified_name), `get_context` (full parent overview), `list_sources`
 - **Resources:** `glyph://sources`, `glyph://sources/{name}/{version}/index`, `glyph://sources/{name}/{version}/classes/{class}`
 - **Implementation:** `server.py` uses FastMCP with lifespan for store/embedder init. Formatting helpers produce markdown output matching the tiered export style.
-- **Store methods added for MCP:** `get_by_qualified_name()`, `get_by_parent()`, `get_sources_with_counts()`. `search()` extended with `source_version` and `parent_name` filters.
-- **Tests:** `tests/test_server.py` — mocked store, covers all 4 tools + formatters
+- **Hybrid search:** `hybrid_search()` combines `text_search()` (FTS via `websearch_to_tsquery`) and `search()` (pgvector) using Reciprocal Rank Fusion (RRF, k=60). Gracefully degrades to keyword-only when embeddings unavailable. Results tagged `[hybrid]`, `[keyword]`, or `[semantic]`.
+- **Store methods added for MCP:** `get_by_qualified_name()`, `get_by_parent()`, `get_sources_with_counts()`, `text_search()`, `hybrid_search()`, `upgrade_schema()`.
+- **Tests:** `tests/test_server.py` — mocked store, covers all 4 tools + formatters. `tests/test_hybrid_search.py` — 21 tests for FTS, RRF, hybrid search, upgrade_schema, MCP integration, retrieval tags.
 
 ## Dependencies
 
