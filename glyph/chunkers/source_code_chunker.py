@@ -3,8 +3,8 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from ragify.domain.models import Chunk, ChunkType, Document
-from ragify.chunkers._parsers import get_parser
+from glyph.domain.models import Chunk, ChunkType, Document
+from glyph.chunkers._parsers import get_parser
 
 logger = logging.getLogger(__name__)
 

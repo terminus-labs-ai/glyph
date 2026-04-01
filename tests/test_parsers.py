@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from ragify.chunkers._parsers import get_parser
-from ragify.domain.models import ChunkType
+from glyph.chunkers._parsers import get_parser
+from glyph.domain.models import ChunkType
 
 FIXTURES = Path(__file__).parent / "fixtures"
 

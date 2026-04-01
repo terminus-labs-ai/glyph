@@ -1,5 +1,5 @@
 [project]
-name = "ragify"
+name = "glyph"
 version = "0.1.0"
 description = "Convert API documentation into structured RAG knowledge bases"
 readme = "README.md"
@@ -22,12 +22,12 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/terminus-labs-ai/ragify"
-Repository = "https://github.com/terminus-labs-ai/ragify"
-Issues = "https://github.com/terminus-labs-ai/ragify/issues"
+Homepage = "https://github.com/terminus-labs-ai/glyph"
+Repository = "https://github.com/terminus-labs-ai/glyph"
+Issues = "https://github.com/terminus-labs-ai/glyph/issues"
 
 [project.scripts]
-ragify = "ragify.__main__:cli"
+glyph = "glyph.__main__:cli"
 
 [build-system]
 requires = ["setuptools>=68"]

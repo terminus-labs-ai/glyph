@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from mcp.server.fastmcp import FastMCP
 
-from ragify.server import (
-    RagifyServer,
+from glyph.server import (
+    GlyphServer,
     _format_chunk_detail,
     _format_context,
     _format_search_results,
@@ -69,10 +69,10 @@ def _make_source(
     }
 
 
-def _build_test_server(mock_store, mock_embedder) -> RagifyServer:
-    """Create a RagifyServer with mocked dependencies, bypassing lifespan."""
-    with patch("ragify.server.load_config"):
-        srv = RagifyServer.__new__(RagifyServer)
+def _build_test_server(mock_store, mock_embedder) -> GlyphServer:
+    """Create a GlyphServer with mocked dependencies, bypassing lifespan."""
+    with patch("glyph.server.load_config"):
+        srv = GlyphServer.__new__(GlyphServer)
         srv._config_path = "test.yaml"
         srv._store = mock_store
         srv._embedder = mock_embedder

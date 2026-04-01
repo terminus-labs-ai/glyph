@@ -8,24 +8,24 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-from ragify.config import load_config
-from ragify.domain.models import ChunkType
-from ragify.embedders.llama import LlamaEmbedder
-from ragify.store import PostgresStore
+from glyph.config import load_config
+from glyph.domain.models import ChunkType
+from glyph.embedders.llama import LlamaEmbedder
+from glyph.store import PostgresStore
 
 logger = logging.getLogger(__name__)
 
 
-class RagifyServer:
-    """MCP server exposing the RAGify knowledge base."""
+class GlyphServer:
+    """MCP server exposing the Glyph knowledge base."""
 
     def __init__(self, config_path: str):
         self._config_path = config_path
         self._store: PostgresStore | None = None
         self._embedder: LlamaEmbedder | None = None
         self.mcp = FastMCP(
-            "ragify",
-            instructions="RAGify knowledge base server. Search API docs, look up classes/functions, and browse indexed sources.",
+            "glyph",
+            instructions="Glyph knowledge base server. Search API docs, look up classes/functions, and browse indexed sources.",
             lifespan=self._lifespan,
         )
         self._register_tools()
@@ -42,12 +42,12 @@ class RagifyServer:
             cfg.embedder.dimensions,
             cfg.embedder.batch_size,
         )
-        logger.info("RAGify MCP server started")
+        logger.info("Glyph MCP server started")
         try:
             yield {}
         finally:
             await self._store.close()
-            logger.info("RAGify MCP server stopped")
+            logger.info("Glyph MCP server stopped")
 
     def _register_tools(self) -> None:
         @self.mcp.tool()
@@ -59,7 +59,7 @@ class RagifyServer:
             parent: str | None = None,
             limit: int = 10,
         ) -> str:
-            """Search the RAGify knowledge base using semantic similarity.
+            """Search the Glyph knowledge base using semantic similarity.
 
             Args:
                 query: Natural language search query
@@ -154,7 +154,7 @@ class RagifyServer:
 
         @self.mcp.tool()
         async def list_sources() -> str:
-            """List all indexed sources in the RAGify knowledge base."""
+            """List all indexed sources in the Glyph knowledge base."""
             if not self._store:
                 return "Error: Server not initialized"
 
@@ -165,7 +165,7 @@ class RagifyServer:
             return _format_sources(sources)
 
     def _register_resources(self) -> None:
-        @self.mcp.resource("ragify://sources")
+        @self.mcp.resource("glyph://sources")
         async def sources_resource() -> str:
             """List all available sources."""
             if not self._store:
@@ -176,7 +176,7 @@ class RagifyServer:
                 indent=2,
             )
 
-        @self.mcp.resource("ragify://sources/{source_name}/{version}/index")
+        @self.mcp.resource("glyph://sources/{source_name}/{version}/index")
         async def source_index(source_name: str, version: str) -> str:
             """Tier 1 index for a source — class names with one-liners."""
             if not self._store:
@@ -198,7 +198,7 @@ class RagifyServer:
 
             return "\n".join(lines)
 
-        @self.mcp.resource("ragify://sources/{source_name}/{version}/classes/{class_name}")
+        @self.mcp.resource("glyph://sources/{source_name}/{version}/classes/{class_name}")
         async def class_detail(source_name: str, version: str, class_name: str) -> str:
             """Full Tier 3 class/module detail."""
             if not self._store:

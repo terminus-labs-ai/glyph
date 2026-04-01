@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from ragify.domain.models import Chunk, ChunkType, DocType, Document
+from glyph.domain.models import Chunk, ChunkType, DocType, Document
 
 
 class TextChunker:

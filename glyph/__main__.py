@@ -7,14 +7,14 @@ from pathlib import Path
 
 import click
 
-from ragify.config import load_config
-from ragify.domain.models import Source
+from glyph.config import load_config
+from glyph.domain.models import Source
 
-logger = logging.getLogger("ragify")
+logger = logging.getLogger("glyph")
 
 
 @click.group()
-@click.option("--config", "-c", default="ragify.yaml", help="Config file path")
+@click.option("--config", "-c", default="glyph.yaml", help="Config file path")
 @click.option("--verbose", "-v", is_flag=True, help="Verbose logging")
 @click.pass_context
 def cli(ctx: click.Context, config: str, verbose: bool) -> None:
@@ -36,7 +36,7 @@ def init_db(ctx: click.Context) -> None:
 
 
 async def _init_db(config_path: str) -> None:
-    from ragify.store import PostgresStore
+    from glyph.store import PostgresStore
 
     cfg = load_config(config_path)
     store = PostgresStore(cfg.database.url, cfg.embedder.dimensions)
@@ -56,13 +56,13 @@ def ingest(ctx: click.Context, source: str | None, skip_embeddings: bool) -> Non
 
 
 async def _ingest(config_path: str, source_filter: str | None, skip_embeddings: bool) -> None:
-    from ragify.chunkers.api_chunker import APIChunker
-    from ragify.chunkers.text_chunker import TextChunker
-    from ragify.domain.models import DocType
-    from ragify.embedders.llama import LlamaEmbedder
-    from ragify.ingestors.godot_xml import GodotXMLIngestor
-    from ragify.ingestors.html import HTMLIngestor
-    from ragify.store import PostgresStore
+    from glyph.chunkers.api_chunker import APIChunker
+    from glyph.chunkers.text_chunker import TextChunker
+    from glyph.domain.models import DocType
+    from glyph.embedders.llama import LlamaEmbedder
+    from glyph.ingestors.godot_xml import GodotXMLIngestor
+    from glyph.ingestors.html import HTMLIngestor
+    from glyph.store import PostgresStore
 
     cfg = load_config(config_path)
     store = PostgresStore(cfg.database.url, cfg.embedder.dimensions)
@@ -114,7 +114,7 @@ async def _ingest(config_path: str, source_filter: str | None, skip_embeddings: 
 
             source_code_chunker = None
             if ing_cfg.type == "source_code":
-                from ragify.chunkers.source_code_chunker import SourceCodeChunker
+                from glyph.chunkers.source_code_chunker import SourceCodeChunker
                 include_bodies = ing_cfg.settings.get("include_bodies", False)
                 source_code_chunker = SourceCodeChunker(
                     src_cfg.name, src_cfg.version,
@@ -165,9 +165,9 @@ async def _ingest(config_path: str, source_filter: str | None, skip_embeddings: 
 
 
 def _build_ingestor(ingestor_type: str, settings: dict, source_id):
-    from ragify.ingestors.godot_xml import GodotXMLIngestor
-    from ragify.ingestors.html import HTMLIngestor
-    from ragify.ingestors.source_code import SourceCodeIngestor
+    from glyph.ingestors.godot_xml import GodotXMLIngestor
+    from glyph.ingestors.html import HTMLIngestor
+    from glyph.ingestors.source_code import SourceCodeIngestor
 
     if ingestor_type == "godot_xml":
         return GodotXMLIngestor(settings["path"], source_id)
@@ -202,8 +202,8 @@ def export(ctx: click.Context, source: str, version: str) -> None:
 
 
 async def _export(config_path: str, source_name: str, source_version: str) -> None:
-    from ragify.exporters.markdown import MarkdownExporter
-    from ragify.store import PostgresStore
+    from glyph.exporters.markdown import MarkdownExporter
+    from glyph.store import PostgresStore
 
     cfg = load_config(config_path)
     store = PostgresStore(cfg.database.url, cfg.embedder.dimensions)
@@ -227,7 +227,7 @@ def stats(ctx: click.Context) -> None:
 
 
 async def _stats(config_path: str) -> None:
-    from ragify.store import PostgresStore
+    from glyph.store import PostgresStore
 
     cfg = load_config(config_path)
     store = PostgresStore(cfg.database.url, cfg.embedder.dimensions)
@@ -255,10 +255,10 @@ async def _stats(config_path: str) -> None:
 @click.option("--port", "-p", default=8420, type=int, help="Port for SSE/HTTP transport")
 @click.pass_context
 def serve(ctx: click.Context, transport: str, host: str, port: int) -> None:
-    """Start the MCP server for RAGify knowledge base queries."""
-    from ragify.server import RagifyServer
+    """Start the MCP server for Glyph knowledge base queries."""
+    from glyph.server import GlyphServer
 
-    server = RagifyServer(ctx.obj["config_path"])
+    server = GlyphServer(ctx.obj["config_path"])
     server.run(transport=transport, host=host, port=port)
 
 

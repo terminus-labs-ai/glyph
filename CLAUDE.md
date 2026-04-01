@@ -1,4 +1,4 @@
-# RAGify
+# Glyph
 
 CLI tool for converting API documentation and source code into structured RAG knowledge bases.
 
@@ -7,16 +7,16 @@ CLI tool for converting API documentation and source code into structured RAG kn
 ```bash
 uv venv .venv && source .venv/bin/activate
 uv pip install -e .
-cp ragify.example.yaml ragify.yaml  # edit with your settings
-ragify init-db
-ragify ingest
-ragify export -s godot -V 4.6.1
+cp glyph.example.yaml glyph.yaml  # edit with your settings
+glyph init-db
+glyph ingest
+glyph export -s godot -V 4.6.1
 ```
 
 ## Architecture
 
 ```
-ragify/
+glyph/
 ├── __main__.py               # CLI (click): init-db, ingest, export, stats, serve
 ├── config.py                 # YAML → dataclass config loader
 ├── server.py                 # MCP server (FastMCP): search, lookup, get_context, list_sources
@@ -63,7 +63,7 @@ Source (XML/HTML/code)
 
 - **Protocols** (`typing.Protocol`) for all extension points -- no ABC inheritance
 - **Async throughout**: aiohttp for HTTP, asyncpg for DB
-- **YAML config** (`ragify.yaml`) for all settings, git-ignored
+- **YAML config** (`glyph.yaml`) for all settings, git-ignored
 - **Content hashing**: MD5 of raw content for incremental updates (skip unchanged docs)
 - **Denormalized** `source_name`/`source_version` on chunks for direct queries without joins
 - **Chunker selection** in `__main__.py:_ingest()`:
@@ -142,11 +142,11 @@ Tutorials: `tutorials/_index.md` (tier 2) + `tutorials/name.md` (tier 3).
 
 ## MCP Server
 
-`ragify serve` starts an MCP server exposing the knowledge base for runtime queries.
+`glyph serve` starts an MCP server exposing the knowledge base for runtime queries.
 
 - **Transport:** stdio (default, for Claude Code/Desktop), SSE (`-t sse`), streamable-http (`-t streamable-http`)
 - **Tools:** `search` (semantic), `lookup` (exact qualified_name), `get_context` (full parent overview), `list_sources`
-- **Resources:** `ragify://sources`, `ragify://sources/{name}/{version}/index`, `ragify://sources/{name}/{version}/classes/{class}`
+- **Resources:** `glyph://sources`, `glyph://sources/{name}/{version}/index`, `glyph://sources/{name}/{version}/classes/{class}`
 - **Implementation:** `server.py` uses FastMCP with lifespan for store/embedder init. Formatting helpers produce markdown output matching the tiered export style.
 - **Store methods added for MCP:** `get_by_qualified_name()`, `get_by_parent()`, `get_sources_with_counts()`. `search()` extended with `source_version` and `parent_name` filters.
 - **Tests:** `tests/test_server.py` — mocked store, covers all 4 tools + formatters
@@ -157,19 +157,19 @@ Python 3.11+, aiohttp, asyncpg, beautifulsoup4, lxml, pyyaml, click, mcp[cli], t
 
 ## GitHub Action
 
-Ragify is a reusable composite action (`action.yml` at repo root). Callers reference it as `uses: owner/ragify@main`.
+Glyph is a reusable composite action (`action.yml` at repo root). Callers reference it as `uses: owner/glyph@main`.
 
-**Inputs:** `config` (required, full ragify.yaml content as string for secret interpolation), `commands` (space-separated: init-db/ingest/export/stats), `source`, `version`, `python-version`, `extra-args`.
+**Inputs:** `config` (required, full glyph.yaml content as string for secret interpolation), `commands` (space-separated: init-db/ingest/export/stats), `source`, `version`, `python-version`, `extra-args`.
 
-**How it works:** Sets up Python + uv, installs ragify from the action's source, writes config to a temp file, runs commands in sequence, cleans up config.
+**How it works:** Sets up Python + uv, installs glyph from the action's source, writes config to a temp file, runs commands in sequence, cleans up config.
 
 **Caller example** (in another repo's workflow):
 ```yaml
-- uses: owner/ragify@main
+- uses: owner/glyph@main
   with:
     config: |
       database:
-        url: "${{ secrets.RAGIFY_DB_URL }}"
+        url: "${{ secrets.GLYPH_DB_URL }}"
       sources:
         - name: my-project
           version: "${{ github.sha }}"

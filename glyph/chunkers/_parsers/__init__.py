@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from ragify.domain.models import ChunkType
+from glyph.domain.models import ChunkType
 
 
 @dataclass
@@ -24,21 +24,21 @@ class LanguageParser(Protocol):
 
 def get_parser(language: str) -> LanguageParser | None:
     if language == "python":
-        from ragify.chunkers._parsers.python_parser import PythonParser
+        from glyph.chunkers._parsers.python_parser import PythonParser
         return PythonParser()
     elif language == "gdscript":
-        from ragify.chunkers._parsers.gdscript_parser import GDScriptParser
+        from glyph.chunkers._parsers.gdscript_parser import GDScriptParser
         return GDScriptParser()
     elif language == "typescript":
-        from ragify.chunkers._parsers.typescript_parser import TypeScriptParser
+        from glyph.chunkers._parsers.typescript_parser import TypeScriptParser
         return TypeScriptParser()
     elif language == "tsx":
-        from ragify.chunkers._parsers.typescript_parser import TypeScriptParser
+        from glyph.chunkers._parsers.typescript_parser import TypeScriptParser
         return TypeScriptParser(tsx=True)
     elif language == "rust":
-        from ragify.chunkers._parsers.rust_parser import RustParser
+        from glyph.chunkers._parsers.rust_parser import RustParser
         return RustParser()
     elif language == "go":
-        from ragify.chunkers._parsers.go_parser import GoParser
+        from glyph.chunkers._parsers.go_parser import GoParser
         return GoParser()
     return None

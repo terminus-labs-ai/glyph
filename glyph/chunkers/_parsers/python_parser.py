@@ -5,8 +5,8 @@ import logging
 import tree_sitter_python as tspython
 from tree_sitter import Language, Parser
 
-from ragify.chunkers._parsers import Symbol
-from ragify.domain.models import ChunkType
+from glyph.chunkers._parsers import Symbol
+from glyph.domain.models import ChunkType
 
 logger = logging.getLogger(__name__)
 

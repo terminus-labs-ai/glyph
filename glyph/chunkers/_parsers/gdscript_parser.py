@@ -3,8 +3,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from ragify.chunkers._parsers import Symbol
-from ragify.domain.models import ChunkType
+from glyph.chunkers._parsers import Symbol
+from glyph.domain.models import ChunkType
 
 # GDScript patterns
 CLASS_NAME_RE = re.compile(r"^class_name\s+(\w+)", re.MULTILINE)

@@ -7,7 +7,7 @@ from typing import Any
 
 import asyncpg
 
-from ragify.domain.models import Chunk, ChunkType, DocType, Document, Source
+from glyph.domain.models import Chunk, ChunkType, DocType, Document, Source
 
 logger = logging.getLogger(__name__)
 

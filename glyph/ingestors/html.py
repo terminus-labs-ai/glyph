@@ -10,7 +10,7 @@ from urllib.parse import urljoin, urlparse
 import aiohttp
 from bs4 import BeautifulSoup
 
-from ragify.domain.models import DocType, Document
+from glyph.domain.models import DocType, Document
 
 logger = logging.getLogger(__name__)
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from ragify.domain.models import Document
+from glyph.domain.models import Document
 
 
 class Ingestor(Protocol):

@@ -5,7 +5,7 @@ import logging
 import uuid
 from pathlib import Path
 
-from ragify.domain.models import DocType, Document
+from glyph.domain.models import DocType, Document
 
 logger = logging.getLogger(__name__)
 

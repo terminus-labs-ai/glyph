@@ -113,11 +113,11 @@ dmypy.json
 Thumbs.db
 
 # Virtual environments
-ragify_env/
+glyph_env/
 .venv/
 
 # Output
 output/
 
 # Config with secrets
-ragify.yaml
+glyph.yaml

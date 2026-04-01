@@ -1,4 +1,4 @@
-# RAGify
+# Glyph
 
 Convert API documentation and source code into structured RAG knowledge bases. Ingest from multiple source types, chunk intelligently by API element, generate embeddings, store in PostgreSQL with pgvector, and export as tiered markdown files for LLM context injection.
 
@@ -15,8 +15,8 @@ Convert API documentation and source code into structured RAG knowledge bases. I
 ## Install
 
 ```bash
-git clone https://github.com/terminus-labs-ai/ragify.git
-cd ragify
+git clone https://github.com/terminus-labs-ai/glyph.git
+cd glyph
 uv venv .venv && source .venv/bin/activate
 uv pip install -e .
 ```
@@ -27,40 +27,40 @@ uv pip install -e .
 
 ```bash
 # 1. Configure
-cp ragify.example.yaml ragify.yaml
-# Edit ragify.yaml with your database URL, embedding server, and sources
+cp glyph.example.yaml glyph.yaml
+# Edit glyph.yaml with your database URL, embedding server, and sources
 
 # 2. Initialize database
-ragify init-db
+glyph init-db
 
 # 3. Ingest documentation
-ragify ingest
+glyph ingest
 
 # 4. Export as tiered markdown
-ragify export -s godot -V 4.4
+glyph export -s godot -V 4.4
 
 # 5. Check stats
-ragify stats
+glyph stats
 ```
 
 ## CLI Reference
 
-All commands accept `-c <path>` to specify a config file (default: `ragify.yaml`) and `-v` for verbose logging.
+All commands accept `-c <path>` to specify a config file (default: `glyph.yaml`) and `-v` for verbose logging.
 
 | Command | Description |
 |---------|-------------|
-| `ragify init-db` | Create database tables and pgvector extension |
-| `ragify ingest` | Ingest docs from all configured sources |
-| `ragify ingest -s godot` | Ingest only the named source |
-| `ragify ingest --skip-embeddings` | Ingest and chunk without generating embeddings |
-| `ragify export -s NAME -V VERSION` | Export chunks as tiered markdown |
-| `ragify stats` | Show source/document/chunk counts |
-| `ragify serve` | Start MCP server (default: stdio transport) |
-| `ragify serve -t sse -H 0.0.0.0 -p 8420` | Start MCP server with SSE transport |
+| `glyph init-db` | Create database tables and pgvector extension |
+| `glyph ingest` | Ingest docs from all configured sources |
+| `glyph ingest -s godot` | Ingest only the named source |
+| `glyph ingest --skip-embeddings` | Ingest and chunk without generating embeddings |
+| `glyph export -s NAME -V VERSION` | Export chunks as tiered markdown |
+| `glyph stats` | Show source/document/chunk counts |
+| `glyph serve` | Start MCP server (default: stdio transport) |
+| `glyph serve -t sse -H 0.0.0.0 -p 8420` | Start MCP server with SSE transport |
 
 ## Configuration
 
-Full example in [`ragify.example.yaml`](ragify.example.yaml). Key sections:
+Full example in [`glyph.example.yaml`](glyph.example.yaml). Key sections:
 
 ### Database
 
@@ -239,17 +239,17 @@ Three tables, all with UUID primary keys:
 - `embedding` -- pgvector column for similarity search
 - `source_name` / `source_version` -- denormalized for direct queries without joins
 
-## Extending RAGify
+## Extending Glyph
 
 All extension points use `typing.Protocol` -- implement the interface and plug in.
 
 ### Add a new language parser
 
-Create `ragify/chunkers/_parsers/your_language_parser.py`:
+Create `glyph/chunkers/_parsers/your_language_parser.py`:
 
 ```python
-from ragify.chunkers._parsers import Symbol, LanguageParser
-from ragify.domain.models import ChunkType
+from glyph.chunkers._parsers import Symbol, LanguageParser
+from glyph.domain.models import ChunkType
 
 class YourLanguageParser:
     def parse(self, source: str, *, include_bodies: bool = False) -> list[Symbol]:
@@ -258,17 +258,17 @@ class YourLanguageParser:
         ...
 ```
 
-Register it in `ragify/chunkers/_parsers/__init__.py`:
+Register it in `glyph/chunkers/_parsers/__init__.py`:
 
 ```python
 def get_parser(language: str) -> LanguageParser | None:
     ...
     elif language == "your_language":
-        from ragify.chunkers._parsers.your_language_parser import YourLanguageParser
+        from glyph.chunkers._parsers.your_language_parser import YourLanguageParser
         return YourLanguageParser()
 ```
 
-Add the extension mapping in `ragify/chunkers/source_code_chunker.py`:
+Add the extension mapping in `glyph/chunkers/source_code_chunker.py`:
 
 ```python
 EXTENSION_MAP = {
@@ -307,7 +307,7 @@ class MyEmbedder:
 
 ## MCP Integration
 
-RAGify includes an MCP (Model Context Protocol) server, enabling any MCP-compatible client to query the knowledge base at runtime.
+Glyph includes an MCP (Model Context Protocol) server, enabling any MCP-compatible client to query the knowledge base at runtime.
 
 ### Tools
 
@@ -322,9 +322,9 @@ RAGify includes an MCP (Model Context Protocol) server, enabling any MCP-compati
 
 | URI | Description |
 |-----|-------------|
-| `ragify://sources` | JSON list of all source name/version pairs |
-| `ragify://sources/{name}/{version}/index` | Tier 1 index markdown for a source |
-| `ragify://sources/{name}/{version}/classes/{class}` | Tier 3 full class detail |
+| `glyph://sources` | JSON list of all source name/version pairs |
+| `glyph://sources/{name}/{version}/index` | Tier 1 index markdown for a source |
+| `glyph://sources/{name}/{version}/classes/{class}` | Tier 3 full class detail |
 
 ### Client Configuration
 
@@ -333,9 +333,9 @@ RAGify includes an MCP (Model Context Protocol) server, enabling any MCP-compati
 ```json
 {
   "mcpServers": {
-    "ragify": {
+    "glyph": {
       "command": "uv",
-      "args": ["run", "--directory", "/path/to/ragify", "ragify", "serve"]
+      "args": ["run", "--directory", "/path/to/glyph", "glyph", "serve"]
     }
   }
 }
@@ -346,20 +346,20 @@ RAGify includes an MCP (Model Context Protocol) server, enabling any MCP-compati
 ```json
 {
   "mcpServers": {
-    "ragify": {
+    "glyph": {
       "command": "uv",
-      "args": ["run", "--directory", "/path/to/ragify", "ragify", "serve"]
+      "args": ["run", "--directory", "/path/to/glyph", "glyph", "serve"]
     }
   }
 }
 ```
 
-**Remote/SSE client** (first start the server with `ragify serve -t sse -H 0.0.0.0 -p 8420`):
+**Remote/SSE client** (first start the server with `glyph serve -t sse -H 0.0.0.0 -p 8420`):
 
 ```json
 {
   "mcpServers": {
-    "ragify": {
+    "glyph": {
       "url": "http://localhost:8420/sse"
     }
   }
@@ -369,13 +369,13 @@ RAGify includes an MCP (Model Context Protocol) server, enabling any MCP-compati
 ### Testing with MCP Inspector
 
 ```bash
-npx @modelcontextprotocol/inspector uv run ragify serve
+npx @modelcontextprotocol/inspector uv run glyph serve
 ```
 
 ## Architecture
 
 ```
-ragify/
+glyph/
 ├── domain/models.py          # Source, Document, Chunk dataclasses + enums
 ├── config.py                 # YAML config loader
 ├── server.py                 # MCP server (FastMCP, 4 tools + resources)

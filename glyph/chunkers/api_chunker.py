@@ -6,7 +6,7 @@ import uuid
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
-from ragify.domain.models import Chunk, ChunkType, DocType, Document
+from glyph.domain.models import Chunk, ChunkType, DocType, Document
 
 logger = logging.getLogger(__name__)
 
