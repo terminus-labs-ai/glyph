@@ -81,7 +81,7 @@ PostgreSQL with `uuid-ossp` + `vector` extensions. Three tables:
 
 Indexes: `(parent_name, chunk_type)`, `(source_name, source_version)`, `(qualified_name)`, IVFFlat on embedding, GIN on `fts` tsvector.
 
-The `chunks` table has an `fts` tsvector generated column (weighted: A=qualified_name/heading, B=summary, C=content) for full-text search. `upgrade_schema()` adds it idempotently to existing databases.
+The `chunks` table has an `fts` tsvector generated column (weighted: A=qualified_name/heading, B=summary, C=content) for full-text search. `upgrade_schema()` adds it idempotently to existing databases. `idx_chunks_fts` (GIN on `fts`) lives only in `upgrade_schema()`, not in `SCHEMA_SQL` — the index must be created after the column exists on pre-existing tables.
 
 Schema DDL lives in `store/postgres.py` as `SCHEMA_SQL` string (uses `str.format()` -- literal braces must be escaped as `{{}}`).
 
@@ -114,6 +114,8 @@ Registered in `__main__.py:_build_ingestor()`. Each type reads its settings from
 | Go | `GoParser` | tree-sitter AST | structs, interfaces, functions, receiver methods (pointer/value), const blocks, var declarations, type aliases, `//` doc comments, exported detection (uppercase) |
 
 Add new languages: implement `LanguageParser` protocol, register in `get_parser()`, add to `EXTENSION_MAP`.
+
+**UTF-8 offset correctness:** tree-sitter byte offsets index into the UTF-8 encoded bytes, not Python `str` character indices. All parsers must encode source to `bytes` before parsing and slice `src[node.start_byte:node.end_byte]` (then decode). Do NOT slice the original `str` — files with non-ASCII characters (em-dashes, curly quotes, unicode in docstrings) will produce mangled names for everything after the first non-ASCII byte. `PythonParser` is correctly using `src: bytes` throughout; verify new parsers do the same.
 
 ## Embedder
 
