@@ -23,19 +23,20 @@ class TypeScriptParser:
 
     def parse(self, source: str, *, include_bodies: bool = False) -> list[Symbol]:
         parser = Parser(self._language)
-        tree = parser.parse(source.encode())
+        src = source.encode("utf-8")
+        tree = parser.parse(src)
         symbols: list[Symbol] = []
 
         nodes = tree.root_node.children
         for i, node in enumerate(nodes):
-            prev_comment = _get_preceding_comment(source, nodes, i)
-            self._process_node(source, node, symbols, include_bodies, prev_comment)
+            prev_comment = _get_preceding_comment(src, nodes, i)
+            self._process_node(src, node, symbols, include_bodies, prev_comment)
 
         return symbols
 
     def _process_node(
         self,
-        source: str,
+        src: bytes,
         node: Node,
         symbols: list[Symbol],
         include_bodies: bool,
@@ -53,41 +54,41 @@ class TypeScriptParser:
                     "interface_declaration", "enum_declaration",
                     "type_alias_declaration",
                 ):
-                    inner_comment = _get_jsdoc_from_export(source, node) or prev_comment
-                    self._process_node(source, child, symbols, include_bodies, inner_comment, exported, default)
+                    inner_comment = _get_jsdoc_from_export(src, node) or prev_comment
+                    self._process_node(src, child, symbols, include_bodies, inner_comment, exported, default)
             return
 
         if node.type in ("class_declaration", "abstract_class_declaration"):
-            symbols.extend(self._parse_class(source, node, include_bodies, prev_comment, is_exported, is_default))
+            symbols.extend(self._parse_class(src, node, include_bodies, prev_comment, is_exported, is_default))
         elif node.type == "function_declaration":
-            sym = self._parse_function(source, node, None, include_bodies, prev_comment, is_exported)
+            sym = self._parse_function(src, node, None, include_bodies, prev_comment, is_exported)
             if sym:
                 symbols.append(sym)
         elif node.type == "lexical_declaration":
-            sym = self._parse_arrow_function(source, node, include_bodies, prev_comment, is_exported)
+            sym = self._parse_arrow_function(src, node, include_bodies, prev_comment, is_exported)
             if sym:
                 symbols.append(sym)
         elif node.type == "interface_declaration":
-            sym = self._parse_interface(source, node, include_bodies, prev_comment, is_exported)
+            sym = self._parse_interface(src, node, include_bodies, prev_comment, is_exported)
             if sym:
                 symbols.append(sym)
         elif node.type == "enum_declaration":
-            sym = self._parse_enum(source, node, include_bodies, prev_comment, is_exported)
+            sym = self._parse_enum(src, node, include_bodies, prev_comment, is_exported)
             if sym:
                 symbols.append(sym)
         elif node.type == "type_alias_declaration":
-            sym = self._parse_type_alias(source, node, prev_comment, is_exported)
+            sym = self._parse_type_alias(src, node, prev_comment, is_exported)
             if sym:
                 symbols.append(sym)
 
     # ── Class ──────────────────────────────────────────────────────────
 
     def _parse_class(
-        self, source: str, node: Node, include_bodies: bool,
+        self, src: bytes, node: Node, include_bodies: bool,
         docstring: str, is_exported: bool, is_default: bool,
     ) -> list[Symbol]:
         symbols: list[Symbol] = []
-        name = _child_text(source, node, "name")
+        name = _child_text(src, node, "name")
         if not name:
             return symbols
 
@@ -101,13 +102,13 @@ class TypeScriptParser:
                 if clause.type == "extends_clause":
                     for c in clause.children:
                         if c.type in ("identifier", "type_identifier", "generic_type"):
-                            bases.append(source[c.start_byte:c.end_byte])
+                            bases.append(_slice(src, c))
                 elif clause.type == "implements_clause":
                     for c in clause.children:
                         if c.type in ("identifier", "type_identifier", "generic_type"):
-                            implements.append(source[c.start_byte:c.end_byte])
+                            implements.append(_slice(src, c))
 
-        type_params = _extract_type_parameters(source, node)
+        type_params = _extract_type_parameters(src, node)
 
         sig = f"class {name}"
         if type_params:
@@ -150,23 +151,23 @@ class TypeScriptParser:
         if body:
             children = body.children
             for i, child in enumerate(children):
-                comment = _get_preceding_comment(source, children, i)
+                comment = _get_preceding_comment(src, children, i)
                 if child.type == "method_definition":
-                    sym = self._parse_method(source, child, name, include_bodies, comment)
+                    sym = self._parse_method(src, child, name, include_bodies, comment)
                     if sym:
                         symbols.append(sym)
                 elif child.type == "abstract_method_signature":
-                    sym = self._parse_abstract_method(source, child, name, comment)
+                    sym = self._parse_abstract_method(src, child, name, comment)
                     if sym:
                         symbols.append(sym)
 
         return symbols
 
     def _parse_method(
-        self, source: str, node: Node, class_name: str,
+        self, src: bytes, node: Node, class_name: str,
         include_bodies: bool, docstring: str,
     ) -> Symbol | None:
-        name = _child_text(source, node, "name")
+        name = _child_text(src, node, "name")
         if not name:
             return None
 
@@ -177,19 +178,19 @@ class TypeScriptParser:
 
         for child in node.children:
             if child.type == "accessibility_modifier":
-                visibility = source[child.start_byte:child.end_byte]
+                visibility = _slice(src, child)
             elif child.type == "static":
                 is_static = True
             elif child.type == "async":
                 is_async = True
             elif child.type == "decorator":
-                decorators.append(source[child.start_byte:child.end_byte])
+                decorators.append(_slice(src, child))
 
         params_node = _child_by_type(node, "formal_parameters")
-        params_text = source[params_node.start_byte:params_node.end_byte] if params_node else "()"
+        params_text = _slice(src, params_node) if params_node else "()"
 
-        ret_type = _extract_return_type(source, node)
-        type_params = _extract_type_parameters(source, node)
+        ret_type = _extract_return_type(src, node)
+        type_params = _extract_type_parameters(src, node)
 
         sig_parts: list[str] = []
         if visibility:
@@ -209,8 +210,7 @@ class TypeScriptParser:
         jsdoc_meta = _parse_jsdoc_tags(docstring)
 
         if include_bodies:
-            full_text = source[node.start_byte:node.end_byte]
-            content = f"```typescript\n{full_text}\n```"
+            content = f"```typescript\n{_slice(src, node)}\n```"
         else:
             content = f"```typescript\n{sig}\n```"
             if doc_text:
@@ -241,20 +241,20 @@ class TypeScriptParser:
         )
 
     def _parse_abstract_method(
-        self, source: str, node: Node, class_name: str, docstring: str,
+        self, src: bytes, node: Node, class_name: str, docstring: str,
     ) -> Symbol | None:
-        name = _child_text(source, node, "name")
+        name = _child_text(src, node, "name")
         if not name:
             return None
 
         visibility = None
         for child in node.children:
             if child.type == "accessibility_modifier":
-                visibility = source[child.start_byte:child.end_byte]
+                visibility = _slice(src, child)
 
         params_node = _child_by_type(node, "formal_parameters")
-        params_text = source[params_node.start_byte:params_node.end_byte] if params_node else "()"
-        ret_type = _extract_return_type(source, node)
+        params_text = _slice(src, params_node) if params_node else "()"
+        ret_type = _extract_return_type(src, node)
 
         sig_parts = ["abstract"]
         if visibility:
@@ -287,18 +287,18 @@ class TypeScriptParser:
     # ── Standalone function ────────────────────────────────────────────
 
     def _parse_function(
-        self, source: str, node: Node, parent: str | None,
+        self, src: bytes, node: Node, parent: str | None,
         include_bodies: bool, docstring: str, is_exported: bool = False,
     ) -> Symbol | None:
-        name = _child_text(source, node, "name")
+        name = _child_text(src, node, "name")
         if not name:
             return None
 
         is_async = any(c.type == "async" for c in node.children)
         params_node = _child_by_type(node, "formal_parameters")
-        params_text = source[params_node.start_byte:params_node.end_byte] if params_node else "()"
-        ret_type = _extract_return_type(source, node)
-        type_params = _extract_type_parameters(source, node)
+        params_text = _slice(src, params_node) if params_node else "()"
+        ret_type = _extract_return_type(src, node)
+        type_params = _extract_type_parameters(src, node)
 
         prefix = "async " if is_async else ""
         sig = f"{prefix}function {name}"
@@ -312,8 +312,7 @@ class TypeScriptParser:
         jsdoc_meta = _parse_jsdoc_tags(docstring)
 
         if include_bodies:
-            full_text = source[node.start_byte:node.end_byte]
-            content = f"```typescript\n{full_text}\n```"
+            content = f"```typescript\n{_slice(src, node)}\n```"
         else:
             content = f"```typescript\n{sig}\n```"
             if doc_text:
@@ -342,22 +341,22 @@ class TypeScriptParser:
     # ── Arrow function (const x = (...) => ...) ───────────────────────
 
     def _parse_arrow_function(
-        self, source: str, node: Node, include_bodies: bool,
+        self, src: bytes, node: Node, include_bodies: bool,
         docstring: str, is_exported: bool = False,
     ) -> Symbol | None:
         for child in node.children:
             if child.type != "variable_declarator":
                 continue
-            name = _child_text(source, child, "name")
+            name = _child_text(src, child, "name")
             arrow = _child_by_type(child, "arrow_function")
             if not name or not arrow:
                 continue
 
             is_async = any(c.type == "async" for c in arrow.children)
             params_node = _child_by_type(arrow, "formal_parameters")
-            params_text = source[params_node.start_byte:params_node.end_byte] if params_node else "()"
-            ret_type = _extract_return_type(source, arrow)
-            type_params = _extract_type_parameters(source, arrow)
+            params_text = _slice(src, params_node) if params_node else "()"
+            ret_type = _extract_return_type(src, arrow)
+            type_params = _extract_type_parameters(src, arrow)
 
             prefix = "async " if is_async else ""
             sig = f"const {name} = {prefix}"
@@ -372,8 +371,7 @@ class TypeScriptParser:
             jsdoc_meta = _parse_jsdoc_tags(docstring)
 
             if include_bodies:
-                full_text = source[node.start_byte:node.end_byte]
-                content = f"```typescript\n{full_text}\n```"
+                content = f"```typescript\n{_slice(src, node)}\n```"
             else:
                 content = f"```typescript\n{sig}\n```"
                 if doc_text:
@@ -402,20 +400,20 @@ class TypeScriptParser:
     # ── Interface ──────────────────────────────────────────────────────
 
     def _parse_interface(
-        self, source: str, node: Node, include_bodies: bool,
+        self, src: bytes, node: Node, include_bodies: bool,
         docstring: str, is_exported: bool = False,
     ) -> Symbol | None:
-        name = _child_text(source, node, "name")
+        name = _child_text(src, node, "name")
         if not name:
             return None
 
-        type_params = _extract_type_parameters(source, node)
+        type_params = _extract_type_parameters(src, node)
         extends: list[str] = []
         heritage = _child_by_type(node, "extends_type_clause")
         if heritage:
             for c in heritage.children:
                 if c.type in ("type_identifier", "generic_type"):
-                    extends.append(source[c.start_byte:c.end_byte])
+                    extends.append(_slice(src, c))
 
         sig = f"interface {name}"
         if type_params:
@@ -426,8 +424,7 @@ class TypeScriptParser:
         doc_text = _parse_jsdoc_text(docstring)
 
         if include_bodies:
-            full_text = source[node.start_byte:node.end_byte]
-            content = f"```typescript\n{full_text}\n```"
+            content = f"```typescript\n{_slice(src, node)}\n```"
         else:
             content = f"```typescript\n{sig}\n```"
             if doc_text:
@@ -452,10 +449,10 @@ class TypeScriptParser:
     # ── Enum ───────────────────────────────────────────────────────────
 
     def _parse_enum(
-        self, source: str, node: Node, include_bodies: bool,
+        self, src: bytes, node: Node, include_bodies: bool,
         docstring: str, is_exported: bool = False,
     ) -> Symbol | None:
-        name = _child_text(source, node, "name")
+        name = _child_text(src, node, "name")
         if not name:
             return None
 
@@ -464,16 +461,15 @@ class TypeScriptParser:
         if body:
             for child in body.children:
                 if child.type in ("enum_assignment", "property_identifier"):
-                    member_name = _child_text(source, child, "name")
+                    member_name = _child_text(src, child, "name")
                     if not member_name:
-                        member_name = source[child.start_byte:child.end_byte].split("=")[0].strip()
+                        member_name = _slice(src, child).split("=")[0].strip()
                     members.append(member_name)
 
         doc_text = _parse_jsdoc_text(docstring)
 
         if include_bodies:
-            full_text = source[node.start_byte:node.end_byte]
-            content = f"```typescript\n{full_text}\n```"
+            content = f"```typescript\n{_slice(src, node)}\n```"
         else:
             sig = f"enum {name}"
             content = f"```typescript\n{sig}\n```"
@@ -499,14 +495,14 @@ class TypeScriptParser:
     # ── Type alias ─────────────────────────────────────────────────────
 
     def _parse_type_alias(
-        self, source: str, node: Node, docstring: str, is_exported: bool = False,
+        self, src: bytes, node: Node, docstring: str, is_exported: bool = False,
     ) -> Symbol | None:
-        name = _child_text(source, node, "name")
+        name = _child_text(src, node, "name")
         if not name:
             return None
 
-        type_params = _extract_type_parameters(source, node)
-        full_text = source[node.start_byte:node.end_byte]
+        type_params = _extract_type_parameters(src, node)
+        full_text = _slice(src, node)
         doc_text = _parse_jsdoc_text(docstring)
 
         content = f"```typescript\n{full_text}\n```"
@@ -531,6 +527,11 @@ class TypeScriptParser:
 # ── Helpers ────────────────────────────────────────────────────────────
 
 
+def _slice(src: bytes, node: Node) -> str:
+    """Decode a node's byte span from the UTF-8 source."""
+    return src[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
+
+
 def _child_by_type(node: Node, type_name: str) -> Node | None:
     for child in node.children:
         if child.type == type_name:
@@ -538,44 +539,44 @@ def _child_by_type(node: Node, type_name: str) -> Node | None:
     return None
 
 
-def _child_text(source: str, node: Node, field_name: str) -> str | None:
+def _child_text(src: bytes, node: Node, field_name: str) -> str | None:
     child = node.child_by_field_name(field_name)
     if child:
-        return source[child.start_byte:child.end_byte]
+        return _slice(src, child)
     return None
 
 
-def _extract_return_type(source: str, node: Node) -> str | None:
+def _extract_return_type(src: bytes, node: Node) -> str | None:
     ann = _child_by_type(node, "type_annotation")
     if ann and len(ann.children) >= 2:
         type_node = ann.children[-1]
-        return source[type_node.start_byte:type_node.end_byte]
+        return _slice(src, type_node)
     return None
 
 
-def _extract_type_parameters(source: str, node: Node) -> str:
+def _extract_type_parameters(src: bytes, node: Node) -> str:
     tp = _child_by_type(node, "type_parameters")
     if tp:
-        text = source[tp.start_byte:tp.end_byte]
+        text = _slice(src, tp)
         return text.strip("<>")
     return ""
 
 
-def _get_preceding_comment(source: str, siblings: list, index: int) -> str:
+def _get_preceding_comment(src: bytes, siblings: list, index: int) -> str:
     if index <= 0:
         return ""
     prev = siblings[index - 1]
     if prev.type == "comment":
-        text = source[prev.start_byte:prev.end_byte]
+        text = _slice(src, prev)
         if text.strip().startswith("/**"):
             return text
     return ""
 
 
-def _get_jsdoc_from_export(source: str, export_node: Node) -> str:
+def _get_jsdoc_from_export(src: bytes, export_node: Node) -> str:
     for child in export_node.children:
         if child.type == "comment":
-            text = source[child.start_byte:child.end_byte]
+            text = _slice(src, child)
             if text.strip().startswith("/**"):
                 return text
     return ""

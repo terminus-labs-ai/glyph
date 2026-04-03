@@ -18,58 +18,59 @@ class GoParser:
 
     def parse(self, source: str, *, include_bodies: bool = False) -> list[Symbol]:
         parser = Parser(GO_LANGUAGE)
-        tree = parser.parse(source.encode())
+        src = source.encode("utf-8")
+        tree = parser.parse(src)
         symbols: list[Symbol] = []
 
         nodes = tree.root_node.children
         for i, node in enumerate(nodes):
-            doc = _collect_doc_comments(source, nodes, i)
-            self._process_node(source, node, symbols, include_bodies, doc)
+            doc = _collect_doc_comments(src, nodes, i)
+            self._process_node(src, node, symbols, include_bodies, doc)
 
         return symbols
 
     def _process_node(
-        self, source: str, node: Node, symbols: list[Symbol],
+        self, src: bytes, node: Node, symbols: list[Symbol],
         include_bodies: bool, doc: str,
     ) -> None:
         if node.type == "type_declaration":
-            symbols.extend(self._parse_type_declaration(source, node, include_bodies, doc))
+            symbols.extend(self._parse_type_declaration(src, node, include_bodies, doc))
         elif node.type == "function_declaration":
-            sym = self._parse_function(source, node, include_bodies, doc)
+            sym = self._parse_function(src, node, include_bodies, doc)
             if sym:
                 symbols.append(sym)
         elif node.type == "method_declaration":
-            sym = self._parse_method(source, node, include_bodies, doc)
+            sym = self._parse_method(src, node, include_bodies, doc)
             if sym:
                 symbols.append(sym)
         elif node.type == "const_declaration":
-            symbols.extend(self._parse_const_block(source, node, doc))
+            symbols.extend(self._parse_const_block(src, node, doc))
         elif node.type == "var_declaration":
-            symbols.extend(self._parse_var_block(source, node, doc))
+            symbols.extend(self._parse_var_block(src, node, doc))
 
     # ── Type declarations ──────────────────────────────────────────────
 
     def _parse_type_declaration(
-        self, source: str, node: Node, include_bodies: bool, doc: str,
+        self, src: bytes, node: Node, include_bodies: bool, doc: str,
     ) -> list[Symbol]:
         symbols: list[Symbol] = []
 
         for child in node.children:
             if child.type == "type_spec":
-                sym = self._parse_type_spec(source, child, include_bodies, doc)
+                sym = self._parse_type_spec(src, child, include_bodies, doc)
                 if sym:
                     symbols.append(sym)
             elif child.type == "type_alias":
-                sym = self._parse_type_alias(source, child, doc)
+                sym = self._parse_type_alias(src, child, doc)
                 if sym:
                     symbols.append(sym)
 
         return symbols
 
     def _parse_type_spec(
-        self, source: str, node: Node, include_bodies: bool, doc: str,
+        self, src: bytes, node: Node, include_bodies: bool, doc: str,
     ) -> Symbol | None:
-        name = _child_text(source, node, "name")
+        name = _child_text(src, node, "name")
         if not name:
             return None
 
@@ -78,15 +79,15 @@ class GoParser:
         # Determine what kind of type this is
         type_node = _child_by_type(node, "struct_type")
         if type_node:
-            return self._parse_struct(source, node, type_node, name, is_exported, include_bodies, doc)
+            return self._parse_struct(src, node, type_node, name, is_exported, include_bodies, doc)
 
         iface_node = _child_by_type(node, "interface_type")
         if iface_node:
-            return self._parse_interface(source, node, iface_node, name, is_exported, include_bodies, doc)
+            return self._parse_interface(src, node, iface_node, name, is_exported, include_bodies, doc)
 
         # Named type (type X Y)
-        type_params = _extract_type_parameters(source, node)
-        full = source[node.start_byte:node.end_byte]
+        type_params = _extract_type_parameters(src, node)
+        full = _slice(src, node)
         content = f"```go\ntype {full}\n```"
         if doc:
             content += f"\n\n{doc}"
@@ -104,7 +105,7 @@ class GoParser:
         )
 
     def _parse_struct(
-        self, source: str, spec_node: Node, struct_node: Node,
+        self, src: bytes, spec_node: Node, struct_node: Node,
         name: str, is_exported: bool, include_bodies: bool, doc: str,
     ) -> Symbol:
         fields: list[str] = []
@@ -112,15 +113,15 @@ class GoParser:
         if field_list:
             for f in field_list.children:
                 if f.type == "field_declaration":
-                    fname = _child_text(source, f, "name")
-                    ftype = _child_text(source, f, "type")
+                    fname = _child_text(src, f, "name")
+                    ftype = _child_text(src, f, "type")
                     if fname and ftype:
                         fields.append(f"{fname} {ftype}")
                     elif ftype:
                         # Embedded type
                         fields.append(ftype)
 
-        type_params = _extract_type_parameters(source, spec_node)
+        type_params = _extract_type_parameters(src, spec_node)
 
         sig = f"type {name}"
         if type_params:
@@ -128,7 +129,7 @@ class GoParser:
         sig += " struct"
 
         if include_bodies:
-            full = source[spec_node.start_byte:spec_node.end_byte]
+            full = _slice(src, spec_node)
             content = f"```go\ntype {full}\n```"
         else:
             content = f"```go\n{sig}\n```"
@@ -152,17 +153,17 @@ class GoParser:
         )
 
     def _parse_interface(
-        self, source: str, spec_node: Node, iface_node: Node,
+        self, src: bytes, spec_node: Node, iface_node: Node,
         name: str, is_exported: bool, include_bodies: bool, doc: str,
     ) -> Symbol:
         methods: list[str] = []
         for child in iface_node.children:
             if child.type == "method_elem":
-                mname = _child_text(source, child, "name")
+                mname = _child_text(src, child, "name")
                 if mname:
                     methods.append(mname)
 
-        type_params = _extract_type_parameters(source, spec_node)
+        type_params = _extract_type_parameters(src, spec_node)
 
         sig = f"type {name}"
         if type_params:
@@ -170,7 +171,7 @@ class GoParser:
         sig += " interface"
 
         if include_bodies:
-            full = source[spec_node.start_byte:spec_node.end_byte]
+            full = _slice(src, spec_node)
             content = f"```go\ntype {full}\n```"
         else:
             content = f"```go\n{sig}\n```"
@@ -194,14 +195,14 @@ class GoParser:
         )
 
     def _parse_type_alias(
-        self, source: str, node: Node, doc: str,
+        self, src: bytes, node: Node, doc: str,
     ) -> Symbol | None:
-        name = _child_text(source, node, "name")
+        name = _child_text(src, node, "name")
         if not name:
             return None
 
         is_exported = name[0].isupper()
-        full = source[node.start_byte:node.end_byte]
+        full = _slice(src, node)
 
         content = f"```go\ntype {full}\n```"
         if doc:
@@ -218,17 +219,17 @@ class GoParser:
     # ── Function ───────────────────────────────────────────────────────
 
     def _parse_function(
-        self, source: str, node: Node, include_bodies: bool, doc: str,
+        self, src: bytes, node: Node, include_bodies: bool, doc: str,
     ) -> Symbol | None:
-        name = _child_text(source, node, "name")
+        name = _child_text(src, node, "name")
         if not name:
             return None
 
         is_exported = name[0].isupper()
         params = _child_by_type(node, "parameter_list")
-        params_text = source[params.start_byte:params.end_byte] if params else "()"
-        ret_type = _extract_return_type(source, node)
-        type_params = _extract_type_parameters(source, node)
+        params_text = _slice(src, params) if params else "()"
+        ret_type = _extract_return_type(src, node)
+        type_params = _extract_type_parameters(src, node)
 
         sig = f"func {name}"
         if type_params:
@@ -238,8 +239,7 @@ class GoParser:
             sig += f" {ret_type}"
 
         if include_bodies:
-            full = source[node.start_byte:node.end_byte]
-            content = f"```go\n{full}\n```"
+            content = f"```go\n{_slice(src, node)}\n```"
         else:
             content = f"```go\n{sig}\n```"
             if doc:
@@ -262,9 +262,9 @@ class GoParser:
     # ── Method (with receiver) ─────────────────────────────────────────
 
     def _parse_method(
-        self, source: str, node: Node, include_bodies: bool, doc: str,
+        self, src: bytes, node: Node, include_bodies: bool, doc: str,
     ) -> Symbol | None:
-        name = _child_text(source, node, "name")
+        name = _child_text(src, node, "name")
         if not name:
             return None
 
@@ -282,10 +282,10 @@ class GoParser:
                         for pchild in param.children:
                             if pchild.type == "pointer_type":
                                 is_pointer_receiver = True
-                                receiver_type = source[pchild.start_byte:pchild.end_byte].lstrip("*")
+                                receiver_type = _slice(src, pchild).lstrip("*")
                             elif pchild.type == "type_identifier":
                                 if not receiver_type:
-                                    receiver_type = source[pchild.start_byte:pchild.end_byte]
+                                    receiver_type = _slice(src, pchild)
                 break  # Only process first parameter_list (the receiver)
 
         parent = receiver_type or None
@@ -294,9 +294,9 @@ class GoParser:
         param_lists = [c for c in node.children if c.type == "parameter_list"]
         params_text = "()"
         if len(param_lists) >= 2:
-            params_text = source[param_lists[1].start_byte:param_lists[1].end_byte]
+            params_text = _slice(src, param_lists[1])
 
-        ret_type = _extract_return_type(source, node, skip_params=2)
+        ret_type = _extract_return_type(src, node, skip_params=2)
 
         recv = f"*{receiver_type}" if is_pointer_receiver else receiver_type
         sig = f"func ({recv}) {name}{params_text}"
@@ -304,8 +304,7 @@ class GoParser:
             sig += f" {ret_type}"
 
         if include_bodies:
-            full = source[node.start_byte:node.end_byte]
-            content = f"```go\n{full}\n```"
+            content = f"```go\n{_slice(src, node)}\n```"
         else:
             content = f"```go\n{sig}\n```"
             if doc:
@@ -331,30 +330,30 @@ class GoParser:
     # ── Const block ────────────────────────────────────────────────────
 
     def _parse_const_block(
-        self, source: str, node: Node, doc: str,
+        self, src: bytes, node: Node, doc: str,
     ) -> list[Symbol]:
         symbols: list[Symbol] = []
         for child in node.children:
             if child.type == "const_spec":
-                sym = self._parse_const_spec(source, child, doc)
+                sym = self._parse_const_spec(src, child, doc)
                 if sym:
                     symbols.append(sym)
                     doc = ""  # Only first const gets the block doc
         return symbols
 
-    def _parse_const_spec(self, source: str, node: Node, doc: str) -> Symbol | None:
-        name = _child_text(source, node, "name")
+    def _parse_const_spec(self, src: bytes, node: Node, doc: str) -> Symbol | None:
+        name = _child_text(src, node, "name")
         if not name:
             # Try to find identifier directly
             for child in node.children:
                 if child.type == "identifier":
-                    name = source[child.start_byte:child.end_byte]
+                    name = _slice(src, child)
                     break
         if not name:
             return None
 
         is_exported = name[0].isupper()
-        full = source[node.start_byte:node.end_byte]
+        full = _slice(src, node)
 
         content = f"```go\nconst {full}\n```"
         if doc:
@@ -371,36 +370,36 @@ class GoParser:
     # ── Var block ──────────────────────────────────────────────────────
 
     def _parse_var_block(
-        self, source: str, node: Node, doc: str,
+        self, src: bytes, node: Node, doc: str,
     ) -> list[Symbol]:
         symbols: list[Symbol] = []
         for child in node.children:
             if child.type == "var_spec":
-                sym = self._parse_var_spec(source, child, doc)
+                sym = self._parse_var_spec(src, child, doc)
                 if sym:
                     symbols.append(sym)
                     doc = ""
             elif child.type == "var_spec_list":
                 for spec in child.children:
                     if spec.type == "var_spec":
-                        sym = self._parse_var_spec(source, spec, doc)
+                        sym = self._parse_var_spec(src, spec, doc)
                         if sym:
                             symbols.append(sym)
                             doc = ""
         return symbols
 
-    def _parse_var_spec(self, source: str, node: Node, doc: str) -> Symbol | None:
-        name = _child_text(source, node, "name")
+    def _parse_var_spec(self, src: bytes, node: Node, doc: str) -> Symbol | None:
+        name = _child_text(src, node, "name")
         if not name:
             for child in node.children:
                 if child.type == "identifier":
-                    name = source[child.start_byte:child.end_byte]
+                    name = _slice(src, child)
                     break
         if not name:
             return None
 
         is_exported = name[0].isupper()
-        full = source[node.start_byte:node.end_byte]
+        full = _slice(src, node)
 
         content = f"```go\nvar {full}\n```"
         if doc:
@@ -418,6 +417,11 @@ class GoParser:
 # ── Helpers ────────────────────────────────────────────────────────────
 
 
+def _slice(src: bytes, node: Node) -> str:
+    """Decode a node's byte span from the UTF-8 source."""
+    return src[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
+
+
 def _child_by_type(node: Node, type_name: str) -> Node | None:
     for child in node.children:
         if child.type == type_name:
@@ -425,21 +429,21 @@ def _child_by_type(node: Node, type_name: str) -> Node | None:
     return None
 
 
-def _child_text(source: str, node: Node, field_name: str) -> str | None:
+def _child_text(src: bytes, node: Node, field_name: str) -> str | None:
     child = node.child_by_field_name(field_name)
     if child:
-        return source[child.start_byte:child.end_byte]
+        return _slice(src, child)
     return None
 
 
-def _extract_type_parameters(source: str, node: Node) -> str:
+def _extract_type_parameters(src: bytes, node: Node) -> str:
     tp = _child_by_type(node, "type_parameter_list")
     if tp:
-        return source[tp.start_byte:tp.end_byte]
+        return _slice(src, tp)
     return ""
 
 
-def _extract_return_type(source: str, node: Node, *, skip_params: int = 1) -> str | None:
+def _extract_return_type(src: bytes, node: Node, *, skip_params: int = 1) -> str | None:
     """Extract return type(s) from a Go function/method.
 
     For functions: skip the first parameter_list (params).
@@ -452,23 +456,23 @@ def _extract_return_type(source: str, node: Node, *, skip_params: int = 1) -> st
             param_count += 1
             if param_count > skip_params:
                 # This is the return type tuple
-                return source[child.start_byte:child.end_byte]
+                return _slice(src, child)
         elif child.type in ("type_identifier", "pointer_type", "array_type",
                             "slice_type", "map_type", "qualified_type",
                             "generic_type", "interface_type"):
             if param_count >= skip_params:
-                return source[child.start_byte:child.end_byte]
+                return _slice(src, child)
     return None
 
 
-def _collect_doc_comments(source: str, siblings: list, index: int) -> str:
+def _collect_doc_comments(src: bytes, siblings: list, index: int) -> str:
     """Collect consecutive // comments preceding a node."""
     lines: list[str] = []
     i = index - 1
     while i >= 0:
         prev = siblings[i]
         if prev.type == "comment":
-            text = source[prev.start_byte:prev.end_byte]
+            text = _slice(src, prev)
             if text.startswith("//"):
                 lines.append(text[2:].strip())
                 i -= 1
