@@ -67,7 +67,6 @@ CREATE TABLE IF NOT EXISTS chunks (
 CREATE INDEX IF NOT EXISTS idx_chunks_parent_type ON chunks (parent_name, chunk_type);
 CREATE INDEX IF NOT EXISTS idx_chunks_source ON chunks (source_name, source_version);
 CREATE INDEX IF NOT EXISTS idx_chunks_qualified ON chunks (qualified_name);
-CREATE INDEX IF NOT EXISTS idx_chunks_fts ON chunks USING GIN (fts);
 """
 
 VECTOR_INDEX_SQL = """
