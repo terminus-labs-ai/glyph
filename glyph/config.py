@@ -77,8 +77,9 @@ def load_config(path: str | Path) -> Config:
     for src in raw.get("sources", []):
         ingestors = []
         for ing in src.get("ingestors", []):
-            ing_type = ing.pop("type")
-            ingestors.append(IngestorConfig(type=ing_type, settings=ing))
+            ing_type = ing["type"]
+            settings = {k: v for k, v in ing.items() if k != "type"}
+            ingestors.append(IngestorConfig(type=ing_type, settings=settings))
         sources.append(SourceConfig(
             name=src["name"],
             version=src["version"],

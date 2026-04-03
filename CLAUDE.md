@@ -17,7 +17,7 @@ glyph export -s godot -V 4.6.1
 
 ```
 glyph/
-├── __main__.py               # CLI (click): init-db, ingest, export, stats, serve
+├── __main__.py               # CLI (click): init-db, ingest, export, stats, search, serve
 ├── config.py                 # YAML → dataclass config loader
 ├── server.py                 # MCP server (FastMCP): search, lookup, get_context, list_sources
 ├── domain/
@@ -122,7 +122,7 @@ Add new languages: implement `LanguageParser` protocol, register in `get_parser(
 2. `/api/embeddings` (Ollama)
 3. `/embedding` (llama.cpp)
 
-Batches texts, 60s timeout, returns zero vectors on failure.
+Batches texts, 60s timeout. On failure: emits a loud red CLI warning and returns zero vectors (default). Pass `strict=True` to raise `RuntimeError` instead — wired via `glyph ingest --strict`.
 
 ## Output
 

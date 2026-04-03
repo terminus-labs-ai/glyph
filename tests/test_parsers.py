@@ -297,3 +297,133 @@ class TestGoParser:
     def test_doc_comments(self, symbols):
         s = _find(symbols, "MyStruct")
         assert "sample struct" in s.summary
+
+
+# ── Python ─────────────────────────────────────────────────────────────
+
+
+class TestPythonParser:
+    @pytest.fixture()
+    def symbols(self):
+        return _parse_fixture("python", "sample.py")
+
+    @pytest.fixture()
+    def symbols_with_bodies(self):
+        return _parse_fixture("python", "sample.py", include_bodies=True)
+
+    def test_class_extracted(self, symbols):
+        cls = _find(symbols, "DataProcessor")
+        assert cls.chunk_type == ChunkType.CLASS_OVERVIEW
+        assert "BaseProcessor" in cls.metadata.get("bases", [])
+        assert "Processes data records" in cls.summary
+
+    def test_base_class_no_bases(self, symbols):
+        cls = _find(symbols, "BaseProcessor")
+        assert cls.chunk_type == ChunkType.CLASS_OVERVIEW
+        assert cls.metadata.get("bases", []) == []
+
+    def test_method_with_parent(self, symbols):
+        process = _find(symbols, "process", parent="DataProcessor")
+        assert process.chunk_type == ChunkType.METHOD
+        assert process.metadata.get("return_type") == "list[dict]"
+
+    def test_static_method_decorator(self, symbols):
+        validate = _find(symbols, "validate", parent="DataProcessor")
+        assert "@staticmethod" in validate.metadata.get("decorators", [])
+
+    def test_classmethod_decorator(self, symbols):
+        from_config = _find(symbols, "from_config", parent="DataProcessor")
+        assert "@classmethod" in from_config.metadata.get("decorators", [])
+
+    def test_property_decorator(self, symbols):
+        display_name = _find(symbols, "display_name", parent="DataProcessor")
+        assert "@property" in display_name.metadata.get("decorators", [])
+        assert display_name.metadata.get("return_type") == "str"
+
+    def test_standalone_function(self, symbols):
+        fn = _find(symbols, "run_pipeline")
+        assert fn.parent is None
+        assert fn.chunk_type == ChunkType.METHOD
+        assert "Run data through" in fn.summary
+
+    def test_include_bodies(self, symbols_with_bodies):
+        fn = _find(symbols_with_bodies, "run_pipeline")
+        assert "for p in processors" in fn.content
+
+    def test_no_bodies_shows_signature(self, symbols):
+        fn = _find(symbols, "run_pipeline")
+        assert "```python" in fn.content
+        assert "def run_pipeline" in fn.content
+        assert "for p in processors" not in fn.content
+
+
+# ── GDScript ───────────────────────────────────────────────────────────
+
+
+class TestGDScriptParser:
+    @pytest.fixture()
+    def symbols(self):
+        return _parse_fixture("gdscript", "sample.gd")
+
+    @pytest.fixture()
+    def symbols_with_bodies(self):
+        return _parse_fixture("gdscript", "sample.gd", include_bodies=True)
+
+    def test_class_overview(self, symbols):
+        cls = _find(symbols, "PlayerController")
+        assert cls.chunk_type == ChunkType.CLASS_OVERVIEW
+        assert cls.metadata.get("extends") == "CharacterBody2D"
+        assert "sample GDScript" in cls.summary
+
+    def test_signal_no_params(self, symbols):
+        sig = _find(symbols, "died", parent="PlayerController")
+        assert sig.chunk_type == ChunkType.SIGNAL
+
+    def test_signal_with_params(self, symbols):
+        sig = _find(symbols, "health_changed", parent="PlayerController")
+        assert sig.chunk_type == ChunkType.SIGNAL
+        assert "health_changed" in sig.content
+
+    def test_enum(self, symbols):
+        e = _find(symbols, "State", parent="PlayerController")
+        assert e.chunk_type == ChunkType.ENUM
+        assert "IDLE" in e.metadata.get("values", [])
+        assert "DEAD" in e.metadata.get("values", [])
+
+    def test_const_with_type(self, symbols):
+        c = _find(symbols, "MAX_SPEED", parent="PlayerController")
+        assert c.chunk_type == ChunkType.CONSTANT
+        assert "300.0" in c.content
+
+    def test_const_without_type(self, symbols):
+        c = _find(symbols, "JUMP_FORCE", parent="PlayerController")
+        assert c.chunk_type == ChunkType.CONSTANT
+
+    def test_exported_var(self, symbols):
+        v = _find(symbols, "health", parent="PlayerController")
+        assert v.chunk_type == ChunkType.PROPERTY
+        assert v.metadata.get("type") == "int"
+        assert v.metadata.get("default") == "100"
+
+    def test_var_with_type(self, symbols):
+        v = _find(symbols, "speed", parent="PlayerController")
+        assert v.chunk_type == ChunkType.PROPERTY
+        assert v.metadata.get("type") == "float"
+
+    def test_func_with_return_type(self, symbols):
+        fn = _find(symbols, "get_speed", parent="PlayerController")
+        assert fn.chunk_type == ChunkType.METHOD
+        assert fn.metadata.get("return_type") == "float"
+
+    def test_func_doc_comment(self, symbols):
+        fn = _find(symbols, "move", parent="PlayerController")
+        assert "Move the player" in fn.summary
+
+    def test_func_with_params_metadata(self, symbols):
+        fn = _find(symbols, "take_damage", parent="PlayerController")
+        params = fn.metadata.get("params", [])
+        assert any(p["name"] == "amount" for p in params)
+
+    def test_include_bodies(self, symbols_with_bodies):
+        fn = _find(symbols_with_bodies, "move", parent="PlayerController")
+        assert "move_and_slide" in fn.content

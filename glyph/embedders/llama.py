@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 
 import aiohttp
+import click
 
 logger = logging.getLogger(__name__)
 
@@ -10,11 +11,12 @@ logger = logging.getLogger(__name__)
 class LlamaEmbedder:
     """Generate embeddings via a local llama-server HTTP API."""
 
-    def __init__(self, url: str, model: str, dims: int, batch_size: int = 5):
+    def __init__(self, url: str, model: str, dims: int, batch_size: int = 5, strict: bool = False):
         self._url = url.rstrip("/")
         self._model = model
         self._dims = dims
         self._batch_size = batch_size
+        self._strict = strict
 
     @property
     def dimensions(self) -> int:
@@ -54,7 +56,11 @@ class LlamaEmbedder:
                     logger.debug(f"Endpoint {endpoint} failed: {e}")
                     continue
 
-        logger.warning(f"All embedding endpoints failed, returning zero vectors for {len(texts)} texts")
+        msg = f"All embedding endpoints failed for {len(texts)} texts — embeddings are zero vectors, search quality will be degraded"
+        logger.warning(msg)
+        click.echo(click.style(f"WARNING: {msg}", fg="red", bold=True), err=True)
+        if self._strict:
+            raise RuntimeError(f"Embedding failed (strict mode): all endpoints at {self._url} unreachable")
         return [[0.0] * self._dims for _ in texts]
 
     def _payload_openai(self, texts: list[str]) -> dict:

@@ -28,6 +28,15 @@ def cli(ctx: click.Context, config: str, verbose: bool) -> None:
     ctx.obj["config_path"] = config
 
 
+async def _connect_store(store) -> None:
+    try:
+        await store.connect()
+    except Exception as e:
+        logger.error(f"Could not connect to database: {e}")
+        logger.error("Check your glyph.yaml database.url setting")
+        raise SystemExit(1)
+
+
 @cli.command()
 @click.pass_context
 def init_db(ctx: click.Context) -> None:
@@ -40,7 +49,7 @@ async def _init_db(config_path: str) -> None:
 
     cfg = load_config(config_path)
     store = PostgresStore(cfg.database.url, cfg.embedder.dimensions)
-    await store.connect()
+    await _connect_store(store)
     await store.init_schema()
     await store.upgrade_schema()
     await store.close()
@@ -50,13 +59,14 @@ async def _init_db(config_path: str) -> None:
 @cli.command()
 @click.option("--source", "-s", help="Only ingest a specific source by name")
 @click.option("--skip-embeddings", is_flag=True, help="Skip embedding generation")
+@click.option("--strict", is_flag=True, help="Fail hard if embedding endpoints are unreachable")
 @click.pass_context
-def ingest(ctx: click.Context, source: str | None, skip_embeddings: bool) -> None:
+def ingest(ctx: click.Context, source: str | None, skip_embeddings: bool, strict: bool) -> None:
     """Ingest documentation from configured sources."""
-    asyncio.run(_ingest(ctx.obj["config_path"], source, skip_embeddings))
+    asyncio.run(_ingest(ctx.obj["config_path"], source, skip_embeddings, strict))
 
 
-async def _ingest(config_path: str, source_filter: str | None, skip_embeddings: bool) -> None:
+async def _ingest(config_path: str, source_filter: str | None, skip_embeddings: bool, strict: bool = False) -> None:
     from glyph.chunkers.api_chunker import APIChunker
     from glyph.chunkers.text_chunker import TextChunker
     from glyph.domain.models import DocType
@@ -67,7 +77,7 @@ async def _ingest(config_path: str, source_filter: str | None, skip_embeddings: 
 
     cfg = load_config(config_path)
     store = PostgresStore(cfg.database.url, cfg.embedder.dimensions)
-    await store.connect()
+    await _connect_store(store)
     await store.init_schema()
 
     embedder = None
@@ -77,6 +87,7 @@ async def _ingest(config_path: str, source_filter: str | None, skip_embeddings: 
             cfg.embedder.model,
             cfg.embedder.dimensions,
             cfg.embedder.batch_size,
+            strict=strict,
         )
 
     for src_cfg in cfg.sources:
@@ -208,7 +219,7 @@ async def _export(config_path: str, source_name: str, source_version: str) -> No
 
     cfg = load_config(config_path)
     store = PostgresStore(cfg.database.url, cfg.embedder.dimensions)
-    await store.connect()
+    await _connect_store(store)
 
     chunks = await store.get_all_chunks(source_name, source_version)
     logger.info(f"Exporting {len(chunks)} chunks for {source_name} v{source_version}")
@@ -232,7 +243,7 @@ async def _stats(config_path: str) -> None:
 
     cfg = load_config(config_path)
     store = PostgresStore(cfg.database.url, cfg.embedder.dimensions)
-    await store.connect()
+    await _connect_store(store)
     result = await store.get_stats()
     await store.close()
 
@@ -243,6 +254,93 @@ async def _stats(config_path: str) -> None:
         click.echo("By type:")
         for chunk_type, count in result["by_type"].items():
             click.echo(f"  {chunk_type:20s} {count}")
+
+
+@cli.command()
+@click.argument("query")
+@click.option("--source", "-s", help="Filter by source name")
+@click.option("--version", "-V", help="Filter by source version")
+@click.option("--type", "chunk_types", help="Comma-separated chunk types (e.g. method,property)")
+@click.option("--parent", help="Filter to chunks under a specific parent (e.g. Node2D)")
+@click.option("--limit", default=10, show_default=True, help="Number of results")
+@click.pass_context
+def search(
+    ctx: click.Context,
+    query: str,
+    source: str | None,
+    version: str | None,
+    chunk_types: str | None,
+    parent: str | None,
+    limit: int,
+) -> None:
+    """Search the knowledge base using hybrid semantic + keyword search."""
+    asyncio.run(_search(ctx.obj["config_path"], query, source, version, chunk_types, parent, limit))
+
+
+async def _search(
+    config_path: str,
+    query: str,
+    source: str | None,
+    version: str | None,
+    chunk_types_str: str | None,
+    parent: str | None,
+    limit: int,
+) -> None:
+    from glyph.embedders.llama import LlamaEmbedder
+    from glyph.store import PostgresStore
+
+    cfg = load_config(config_path)
+    store = PostgresStore(cfg.database.url, cfg.embedder.dimensions)
+    await _connect_store(store)
+
+    chunk_types = [t.strip() for t in chunk_types_str.split(",")] if chunk_types_str else None
+
+    embedding = None
+    try:
+        embedder = LlamaEmbedder(
+            cfg.embedder.url,
+            cfg.embedder.model,
+            cfg.embedder.dimensions,
+            cfg.embedder.batch_size,
+        )
+        embeddings = await embedder.embed([query])
+        embedding = embeddings[0]
+    except Exception as e:
+        logger.debug(f"Embedding unavailable, falling back to keyword search: {e}")
+
+    results = await store.hybrid_search(
+        query,
+        embedding,
+        source_name=source,
+        source_version=version,
+        chunk_types=chunk_types,
+        parent_name=parent,
+        limit=limit,
+    )
+
+    await store.close()
+
+    if not results:
+        click.echo(f'No results for "{query}"')
+        return
+
+    for i, r in enumerate(results, 1):
+        tag = r.get("retrieval_tag", "")
+        score = r.get("score", 0.0)
+        qualified_name = r.get("qualified_name") or r.get("heading") or "(unnamed)"
+        chunk_type = r.get("chunk_type", "")
+        src = f"{r.get('source_name', '')} {r.get('source_version', '')}".strip()
+        summary = (r.get("summary") or "").strip()
+        if len(summary) > 120:
+            summary = summary[:117] + "..."
+
+        header = click.style(f"{i}. {qualified_name}", bold=True)
+        meta = click.style(f"  [{chunk_type}] {src} {tag} score={score:.4f}", fg="cyan")
+        click.echo(header)
+        click.echo(meta)
+        if summary:
+            click.echo(f"  {summary}")
+        click.echo()
 
 
 @cli.command()
