@@ -110,7 +110,7 @@ class HTMLIngestor:
                 main = soup.find("main") or soup.find("article") or soup.find("div", class_="document")
                 content_root = main or soup.body or soup
 
-                text = content_root.get_text(separator="\n", strip=True)
+                text = self._extract_markdown_text(content_root)
                 if len(text) < MIN_CONTENT_LENGTH:
                     return None, links
 
@@ -155,6 +155,28 @@ class HTMLIngestor:
         if self._include:
             return any(pat.search(url) for pat in self._include)
         return True
+
+    @staticmethod
+    def _extract_markdown_text(root) -> str:
+        """Convert HTML to text with markdown headings and paragraph breaks.
+
+        Converts <h1>-<h6> to markdown headings so the TextChunker can
+        split on them, and inserts double-newlines between block elements
+        so paragraph-based fallback splitting also works.
+        """
+        heading_tags = {"h1", "h2", "h3", "h4", "h5", "h6"}
+
+        # Replace heading tags in-place with markdown equivalents
+        for tag in root.find_all(heading_tags):
+            text = tag.get_text(strip=True)
+            if text:
+                level = int(tag.name[1])
+                tag.replace_with(f"\n\n{'#' * level} {text}\n\n")
+
+        text = root.get_text(separator="\n", strip=True)
+        # Ensure double-newlines between paragraphs
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        return text.strip()
 
     def _classify_url(self, url: str) -> DocType:
         path = urlparse(url).path.lower()

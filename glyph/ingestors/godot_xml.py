@@ -22,7 +22,7 @@ class GodotXMLIngestor:
         if not self._path.is_dir():
             raise FileNotFoundError(f"Godot XML class directory not found: {self._path}")
 
-        xml_files = sorted(self._path.glob("*.xml"))
+        xml_files = sorted(self._path.rglob("*.xml"))
         logger.info(f"Found {len(xml_files)} XML class files in {self._path}")
 
         documents = []
