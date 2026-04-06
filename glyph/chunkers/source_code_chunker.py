@@ -16,6 +16,10 @@ EXTENSION_MAP = {
     ".tsx": "tsx",
     ".rs": "rust",
     ".go": "go",
+    ".h": "cpp",
+    ".hpp": "cpp",
+    ".cpp": "cpp",
+    ".cc": "cpp",
 }
 
 

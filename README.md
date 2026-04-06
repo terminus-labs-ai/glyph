@@ -4,7 +4,7 @@ Convert API documentation and source code into structured RAG knowledge bases. I
 
 ## Features
 
-- **Multiple ingestors** -- Godot XML class reference, HTML web scraping, source code analysis
+- **Multiple ingestors** -- Godot XML class reference, Unreal Engine C++ headers (via unreal-doc), local docs (Markdown/RST), HTML web scraping, source code analysis
 - **Structured chunking** -- one chunk per method, property, signal, class, etc. (not arbitrary text splits)
 - **Source code parsing** -- tree-sitter (Python, TypeScript/TSX, Rust, Go) and regex (GDScript) extract classes, functions, and docstrings
 - **Tiered markdown export** -- index (minimal tokens) / summary (moderate) / detail (full) for context-efficient LLM use
@@ -31,16 +31,16 @@ cp glyph.example.yaml glyph.yaml
 # Edit glyph.yaml with your database URL, embedding server, and sources
 
 # 2. Initialize database
-glyph init-db
+uv run glyph init-db
 
 # 3. Ingest documentation
-glyph ingest
+uv run glyph ingest
 
 # 4. Export as tiered markdown
-glyph export -s godot -V 4.4
+uv run glyph export -s godot -V 4.4
 
 # 5. Check stats
-glyph stats
+uv run glyph stats
 ```
 
 ## CLI Reference
@@ -125,9 +125,38 @@ output:
 
 Parses Godot engine's XML class reference files (`doc/classes/*.xml`). Extracts class hierarchy, methods with full signatures, properties, signals, constants, and enums.
 
-| Setting | Required | Description |
-|---------|----------|-------------|
-| `path` | yes | Path to directory containing XML class files |
+| Setting | Required | Default | Description |
+|---------|----------|---------|-------------|
+| `path` | yes | -- | Path to directory containing XML class files |
+| `include_patterns` | no | all | Regex patterns to filter file paths |
+| `exclude_patterns` | no | none | Regex patterns to exclude file paths |
+
+### `docs`
+
+Walks a directory tree for documentation files (`.md`, `.rst`, `.txt`). Converts RST headings and inline markup to markdown for heading-based chunking. Produces TUTORIAL documents.
+
+| Setting | Required | Default | Description |
+|---------|----------|---------|-------------|
+| `path` | yes | -- | Root directory to scan |
+| `extensions` | no | `.md`, `.rst`, `.txt` | File extensions to include |
+| `include_patterns` | no | all | Regex patterns to filter file paths |
+| `exclude_patterns` | no | none | Regex patterns to exclude file paths |
+| `exclude_dirs` | no | see below | Directory names to skip |
+
+Default excluded directories: `.git`, `__pycache__`, `.venv`, `venv`, `node_modules`, `_build`, `_static`, `_templates`
+
+**RST conversion:** Headings (underlined with `=`, `-`, `~`, `^`) are converted to markdown `#` headings. Admonitions (`.. note::`, `.. warning::`) are converted to bold labels. Image/toctree directives are stripped. Inline refs (`:ref:`, `:doc:`, `:class:`) are converted to plain text.
+
+```yaml
+sources:
+  - name: godot-docs
+    version: "4.7"
+    ingestors:
+      - type: docs
+        path: "/path/to/godot-docs/tutorials"
+        extensions: [".rst"]
+        exclude_dirs: ["img"]
+```
 
 ### `html`
 
@@ -141,6 +170,7 @@ Async web crawler with filtering. Follows same-domain links, respects rate limit
 | `include_patterns` | no | all | Regex URL patterns to include |
 | `exclude_patterns` | no | none | Regex URL patterns to exclude |
 | `max_concurrent` | no | 10 | Parallel connections |
+
 
 ### `source_code`
 
@@ -381,14 +411,17 @@ glyph/
 ├── server.py                 # MCP server (FastMCP, 4 tools + resources)
 ├── ingestors/
 │   ├── base.py               # Ingestor Protocol
+│   ├── docs.py               # Local .md/.rst/.txt file walker
 │   ├── godot_xml.py          # Godot XML class reference parser
 │   ├── html.py               # Async HTML crawler
-│   └── source_code.py        # Source tree walker
+│   ├── source_code.py        # Source tree walker
+│   └── unreal_doc.py         # unreal-doc JSON parser
 ├── chunkers/
 │   ├── base.py               # Chunker Protocol
 │   ├── api_chunker.py        # Structured API chunks (from XML)
 │   ├── text_chunker.py       # Heading-based text splitting
 │   ├── source_code_chunker.py # Code -> chunks via language parsers
+│   ├── unreal_doc_chunker.py # UE class/method/property chunks
 │   └── _parsers/             # Language-specific parsers
 │       ├── python_parser.py  # tree-sitter AST
 │       ├── gdscript_parser.py # regex-based

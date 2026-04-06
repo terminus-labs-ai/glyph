@@ -18,6 +18,7 @@ dependencies = [
     "tree-sitter-typescript>=0.23.2",
     "tree-sitter-rust>=0.24.2",
     "tree-sitter-go>=0.25.0",
+    "tree-sitter-cpp>=0.23",
     "mcp[cli]>=1.26.0",
 ]
 

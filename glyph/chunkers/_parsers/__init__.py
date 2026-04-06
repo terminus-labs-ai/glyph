@@ -41,4 +41,7 @@ def get_parser(language: str) -> LanguageParser | None:
     elif language == "go":
         from glyph.chunkers._parsers.go_parser import GoParser
         return GoParser()
+    elif language == "cpp":
+        from glyph.chunkers._parsers.cpp_parser import CppParser
+        return CppParser()
     return None

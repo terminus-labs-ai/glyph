@@ -68,6 +68,7 @@ Source (XML/HTML/code)
 - **Denormalized** `source_name`/`source_version` on chunks for direct queries without joins
 - **Chunker selection** in `__main__.py:_ingest()`:
   - `source_code` ingestor → `SourceCodeChunker`
+  - `unreal_doc` ingestor → `UnrealDocChunker`
   - `CLASS_REF` doc_type → `APIChunker`
   - Everything else → `TextChunker`
 
@@ -92,8 +93,10 @@ Schema DDL lives in `store/postgres.py` as `SCHEMA_SQL` string (uses `str.format
 | `godot_xml` | `doc/classes/*.xml` from Godot engine repo | CLASS_REF docs with structured text |
 | `html` | Async BFS crawl from base_url | CLASS_REF/TUTORIAL/GUIDE docs |
 | `source_code` | Directory walk, one Document per file | CLASS_REF docs with raw source |
+| `unreal_doc` | `documentation.json` from [unreal-doc](https://github.com/PsichiX/unreal-doc) tool | CLASS_REF/API_OVERVIEW docs from UE C++ headers |
+| `docs` | Directory walk for `.md`/`.rst`/`.txt` files | TUTORIAL docs with RST→markdown heading conversion |
 
-Registered in `__main__.py:_build_ingestor()`. Each type reads its settings from `IngestorConfig.settings` dict.
+Registered in `__main__.py:_build_ingestor()`. Each type reads its settings from `IngestorConfig.settings` dict. All file-based ingestors (`godot_xml`, `source_code`, `docs`) support `include_patterns` and `exclude_patterns` for regex filtering on file paths.
 
 ## Chunkers
 
@@ -102,6 +105,7 @@ Registered in `__main__.py:_build_ingestor()`. Each type reads its settings from
 | `APIChunker` | CLASS_REF docs (re-parses XML if available) | Per-element chunks: class_overview, method, property, signal, constant, enum |
 | `TextChunker` | TUTORIAL/GUIDE docs | Heading-based sections, splits >2000 chars on paragraph boundaries |
 | `SourceCodeChunker` | Source files | Delegates to language parser, respects `include_bodies` flag |
+| `UnrealDocChunker` | unreal-doc JSON output | Per-method/property/enum chunks with C++ signatures, uses `::` qualified names |
 
 ## Language Parsers (`chunkers/_parsers/`)
 
@@ -112,6 +116,7 @@ Registered in `__main__.py:_build_ingestor()`. Each type reads its settings from
 | TypeScript/TSX | `TypeScriptParser` | tree-sitter AST | classes, methods, functions, arrow functions, interfaces, enums, type aliases, JSDoc (`@param`, `@returns`, `@deprecated`), abstract classes, export/default detection |
 | Rust | `RustParser` | tree-sitter AST | structs, enums, impl methods, traits, trait impls, standalone fns, const/static, type aliases, `///` doc comments, `#[derive()]` attributes, visibility (`pub`/`pub(crate)`/`pub(super)`), async/unsafe |
 | Go | `GoParser` | tree-sitter AST | structs, interfaces, functions, receiver methods (pointer/value), const blocks, var declarations, type aliases, `//` doc comments, exported detection (uppercase) |
+| C++ | `CppParser` | preprocess + tree-sitter AST | classes, structs, enums, methods, fields, `/** */` doc comments, **Unreal Engine macros** (UCLASS, UPROPERTY, UFUNCTION, UENUM, USTRUCT — specifiers extracted as metadata) |
 
 Add new languages: implement `LanguageParser` protocol, register in `get_parser()`, add to `EXTENSION_MAP`.
 

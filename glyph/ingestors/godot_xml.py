@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 import uuid
 from pathlib import Path
 from xml.etree import ElementTree as ET
@@ -14,15 +15,34 @@ logger = logging.getLogger(__name__)
 class GodotXMLIngestor:
     """Parses Godot's XML class reference files from doc/classes/."""
 
-    def __init__(self, path: str, source_id: uuid.UUID):
+    def __init__(
+        self,
+        path: str,
+        source_id: uuid.UUID,
+        *,
+        include_patterns: list[str] | None = None,
+        exclude_patterns: list[str] | None = None,
+    ):
         self._path = Path(path)
         self._source_id = source_id
+        self._include = [re.compile(p) for p in (include_patterns or [])]
+        self._exclude = [re.compile(p) for p in (exclude_patterns or [])]
+
+    def _should_include(self, path: Path) -> bool:
+        path_str = str(path)
+        if self._exclude:
+            for pat in self._exclude:
+                if pat.search(path_str):
+                    return False
+        if self._include:
+            return any(pat.search(path_str) for pat in self._include)
+        return True
 
     async def ingest(self) -> list[Document]:
         if not self._path.is_dir():
             raise FileNotFoundError(f"Godot XML class directory not found: {self._path}")
 
-        xml_files = sorted(self._path.rglob("*.xml"))
+        xml_files = sorted(f for f in self._path.rglob("*.xml") if self._should_include(f))
         logger.info(f"Found {len(xml_files)} XML class files in {self._path}")
 
         documents = []

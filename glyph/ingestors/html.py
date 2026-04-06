@@ -56,7 +56,8 @@ class HTMLIngestor:
                     continue
                 visited.add(normalized)
 
-                if not self._should_include(normalized):
+                is_seed = normalized == self._normalize_url(self._base_url)
+                if not is_seed and not self._should_include(normalized):
                     continue
 
                 logger.info(f"Fetching: {normalized} ({len(documents)}/{self._max_pages})")

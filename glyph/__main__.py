@@ -133,6 +133,14 @@ async def _ingest(config_path: str, source_filter: str | None, skip_embeddings: 
                     include_bodies=include_bodies,
                 )
 
+            unreal_doc_chunker = None
+            if ing_cfg.type == "unreal_doc":
+                from glyph.chunkers.unreal_doc_chunker import UnrealDocChunker
+                unreal_doc_chunker = UnrealDocChunker(
+                    src_cfg.name, src_cfg.version,
+                    json_path=ing_cfg.settings["path"],
+                )
+
             total_chunks = 0
             for doc in documents:
                 doc.source_id = source_id
@@ -149,6 +157,8 @@ async def _ingest(config_path: str, source_filter: str | None, skip_embeddings: 
                 # Chunk based on ingestor type and doc type
                 if source_code_chunker:
                     chunks = source_code_chunker.chunk(doc)
+                elif unreal_doc_chunker:
+                    chunks = unreal_doc_chunker.chunk(doc)
                 elif doc.doc_type == DocType.CLASS_REF:
                     chunks = api_chunker.chunk(doc)
                 else:
@@ -182,7 +192,12 @@ def _build_ingestor(ingestor_type: str, settings: dict, source_id):
     from glyph.ingestors.source_code import SourceCodeIngestor
 
     if ingestor_type == "godot_xml":
-        return GodotXMLIngestor(settings["path"], source_id)
+        return GodotXMLIngestor(
+            settings["path"],
+            source_id,
+            include_patterns=settings.get("include_patterns"),
+            exclude_patterns=settings.get("exclude_patterns"),
+        )
     elif ingestor_type == "html":
         return HTMLIngestor(
             settings["base_url"],
@@ -200,6 +215,19 @@ def _build_ingestor(ingestor_type: str, settings: dict, source_id):
             extensions=settings.get("extensions"),
             exclude_dirs=settings.get("exclude_dirs"),
             exclude_patterns=settings.get("exclude_patterns"),
+        )
+    elif ingestor_type == "unreal_doc":
+        from glyph.ingestors.unreal_doc import UnrealDocIngestor
+        return UnrealDocIngestor(settings["path"], source_id)
+    elif ingestor_type == "docs":
+        from glyph.ingestors.docs import DocsIngestor
+        return DocsIngestor(
+            settings["path"],
+            source_id,
+            extensions=settings.get("extensions"),
+            include_patterns=settings.get("include_patterns"),
+            exclude_patterns=settings.get("exclude_patterns"),
+            exclude_dirs=settings.get("exclude_dirs"),
         )
     return None
 
