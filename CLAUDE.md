@@ -19,7 +19,8 @@ glyph export -s godot -V 4.6.1
 glyph/
 ├── __main__.py               # CLI (click): init-db, ingest, export, stats, search, serve
 ├── config.py                 # YAML → dataclass config loader
-├── server.py                 # MCP server (FastMCP): search, lookup, get_context, list_sources
+├── pipeline.py               # Reusable ingest/export/reindex pipeline (decoupled from CLI)
+├── server.py                 # MCP server (FastMCP): search, lookup, get_context, list_sources, ingest_repo, export_source, reindex
 ├── domain/
 │   └── models.py             # Source, Document, Chunk + ChunkType/DocType enums
 ├── ingestors/
@@ -63,10 +64,10 @@ Source (XML/HTML/code)
 
 - **Protocols** (`typing.Protocol`) for all extension points -- no ABC inheritance
 - **Async throughout**: aiohttp for HTTP, asyncpg for DB
-- **YAML config** (`glyph.yaml`) for all settings, git-ignored
+- **YAML config**: three-tier: global (`~/.config/glyph/config.yaml`) for DB/embedder, per-repo (`.glyph.yaml`) for source identity, auto-discovery fallback
 - **Content hashing**: MD5 of raw content for incremental updates (skip unchanged docs)
 - **Denormalized** `source_name`/`source_version` on chunks for direct queries without joins
-- **Chunker selection** in `__main__.py:_ingest()`:
+- **Chunker selection** in `pipeline.py:_ingest_source()`:
   - `source_code` ingestor → `SourceCodeChunker`
   - `unreal_doc` ingestor → `UnrealDocChunker`
   - `CLASS_REF` doc_type → `APIChunker`
@@ -154,11 +155,13 @@ Tutorials: `tutorials/_index.md` (tier 2) + `tutorials/name.md` (tier 3).
 `glyph serve` starts an MCP server exposing the knowledge base for runtime queries.
 
 - **Transport:** stdio (default, for Claude Code/Desktop), SSE (`-t sse`), streamable-http (`-t streamable-http`)
-- **Tools:** `search` (hybrid semantic + keyword via RRF), `lookup` (exact qualified_name), `get_context` (full parent overview), `list_sources`
+- **Read tools:** `search` (hybrid semantic + keyword via RRF), `lookup` (exact qualified_name), `get_context` (full parent overview), `list_sources`
+- **Write tools:** `ingest_repo` (index a repo via .glyph.yaml or auto-discovery), `export_source` (export tiered markdown), `reindex` (incremental re-index, supports file filter)
 - **Resources:** `glyph://sources`, `glyph://sources/{name}/{version}/index`, `glyph://sources/{name}/{version}/classes/{class}`
 - **Implementation:** `server.py` uses FastMCP with lifespan for store/embedder init. Formatting helpers produce markdown output matching the tiered export style.
 - **Hybrid search:** `hybrid_search()` combines `text_search()` (FTS via `websearch_to_tsquery`) and `search()` (pgvector) using Reciprocal Rank Fusion (RRF, k=60). Gracefully degrades to keyword-only when embeddings unavailable. Results tagged `[hybrid]`, `[keyword]`, or `[semantic]`.
-- **Store methods added for MCP:** `get_by_qualified_name()`, `get_by_parent()`, `get_sources_with_counts()`, `text_search()`, `hybrid_search()`, `upgrade_schema()`.
+- **Store methods for MCP:** `get_by_qualified_name()`, `get_by_parent()`, `get_sources_with_counts()`, `text_search()`, `hybrid_search()`, `upgrade_schema()`.
+- **Pipeline module** (`pipeline.py`): `run_ingest()`, `run_export()` — decoupled from CLI, used by both CLI and MCP tools.
 - **Tests:** `tests/test_server.py` — mocked store, covers all 4 tools + formatters. `tests/test_hybrid_search.py` — 21 tests for FTS, RRF, hybrid search, upgrade_schema, MCP integration, retrieval tags.
 
 ## Dependencies

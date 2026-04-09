@@ -8,7 +8,6 @@ from pathlib import Path
 import click
 
 from glyph.config import load_config
-from glyph.domain.models import Source
 
 logger = logging.getLogger("glyph")
 
@@ -26,15 +25,6 @@ def cli(ctx: click.Context, config: str, verbose: bool) -> None:
     )
     ctx.ensure_object(dict)
     ctx.obj["config_path"] = config
-
-
-async def _connect_store(store) -> None:
-    try:
-        await store.connect()
-    except Exception as e:
-        logger.error(f"Could not connect to database: {e}")
-        logger.error("Check your glyph.yaml database.url setting")
-        raise SystemExit(1)
 
 
 @cli.command()
@@ -56,6 +46,15 @@ async def _init_db(config_path: str) -> None:
     logger.info("Database schema initialized")
 
 
+async def _connect_store(store) -> None:
+    try:
+        await store.connect()
+    except Exception as e:
+        logger.error(f"Could not connect to database: {e}")
+        logger.error("Check your glyph.yaml database.url setting")
+        raise SystemExit(1)
+
+
 @cli.command()
 @click.option("--source", "-s", help="Only ingest a specific source by name")
 @click.option("--skip-embeddings", is_flag=True, help="Skip embedding generation")
@@ -67,169 +66,19 @@ def ingest(ctx: click.Context, source: str | None, skip_embeddings: bool, strict
 
 
 async def _ingest(config_path: str, source_filter: str | None, skip_embeddings: bool, strict: bool = False) -> None:
-    from glyph.chunkers.api_chunker import APIChunker
-    from glyph.chunkers.text_chunker import TextChunker
-    from glyph.domain.models import DocType
-    from glyph.embedders.llama import LlamaEmbedder
-    from glyph.ingestors.godot_xml import GodotXMLIngestor
-    from glyph.ingestors.html import HTMLIngestor
-    from glyph.store import PostgresStore
+    from glyph.pipeline import run_ingest
 
     cfg = load_config(config_path)
-    store = PostgresStore(cfg.database.url, cfg.embedder.dimensions)
-    await _connect_store(store)
-    await store.init_schema()
-
-    embedder = None
-    if not skip_embeddings:
-        embedder = LlamaEmbedder(
-            cfg.embedder.url,
-            cfg.embedder.model,
-            cfg.embedder.dimensions,
-            cfg.embedder.batch_size,
-            strict=strict,
-        )
-
-    for src_cfg in cfg.sources:
-        if source_filter and src_cfg.name != source_filter:
-            continue
-
-        logger.info(f"Processing source: {src_cfg.name} v{src_cfg.version}")
-
-        for ing_cfg in src_cfg.ingestors:
-            # Create source record
-            source_type = ing_cfg.type
-            origin = ing_cfg.settings.get("path") or ing_cfg.settings.get("base_url", "")
-
-            source_obj = Source(
-                name=src_cfg.name,
-                version=src_cfg.version,
-                source_type=source_type,
-                origin=origin,
-            )
-            source_id = await store.upsert_source(source_obj)
-            source_obj.id = source_id
-
-            # Build ingestor
-            ingestor = _build_ingestor(ing_cfg.type, ing_cfg.settings, source_id)
-            if not ingestor:
-                logger.warning(f"Unknown ingestor type: {ing_cfg.type}")
-                continue
-
-            # Ingest documents
-            documents = await ingestor.ingest()
-            logger.info(f"Ingested {len(documents)} documents from {ing_cfg.type}")
-
-            # Build chunkers
-            api_chunker = APIChunker(src_cfg.name, src_cfg.version)
-            text_chunker = TextChunker(src_cfg.name, src_cfg.version)
-
-            source_code_chunker = None
-            if ing_cfg.type == "source_code":
-                from glyph.chunkers.source_code_chunker import SourceCodeChunker
-                include_bodies = ing_cfg.settings.get("include_bodies", False)
-                source_code_chunker = SourceCodeChunker(
-                    src_cfg.name, src_cfg.version,
-                    include_bodies=include_bodies,
-                )
-
-            unreal_doc_chunker = None
-            if ing_cfg.type == "unreal_doc":
-                from glyph.chunkers.unreal_doc_chunker import UnrealDocChunker
-                unreal_doc_chunker = UnrealDocChunker(
-                    src_cfg.name, src_cfg.version,
-                    json_path=ing_cfg.settings["path"],
-                )
-
-            total_chunks = 0
-            for doc in documents:
-                doc.source_id = source_id
-                doc_id, changed = await store.upsert_document(doc)
-                doc.id = doc_id
-
-                if not changed:
-                    logger.debug(f"Skipping unchanged: {doc.title}")
-                    continue
-
-                # Delete old chunks for this document
-                await store.delete_chunks_for_document(doc_id)
-
-                # Chunk based on ingestor type and doc type
-                if source_code_chunker:
-                    chunks = source_code_chunker.chunk(doc)
-                elif unreal_doc_chunker:
-                    chunks = unreal_doc_chunker.chunk(doc)
-                elif doc.doc_type == DocType.CLASS_REF:
-                    chunks = api_chunker.chunk(doc)
-                else:
-                    chunks = text_chunker.chunk(doc)
-
-                # Set document_id on all chunks
-                for chunk in chunks:
-                    chunk.document_id = doc_id
-
-                # Generate embeddings
-                if embedder and chunks:
-                    texts = [c.content for c in chunks]
-                    logger.info(f"Generating embeddings for {len(texts)} chunks from {doc.title}")
-                    embeds = await embedder.embed(texts)
-                    for chunk, emb in zip(chunks, embeds):
-                        chunk.embedding = emb
-
-                inserted = await store.insert_chunks(chunks)
-                total_chunks += inserted
-
-            logger.info(f"Stored {total_chunks} chunks from {ing_cfg.type}")
-
-    stats = await store.get_stats()
-    logger.info(f"Database stats: {stats}")
-    await store.close()
-
-
-def _build_ingestor(ingestor_type: str, settings: dict, source_id):
-    from glyph.ingestors.godot_xml import GodotXMLIngestor
-    from glyph.ingestors.html import HTMLIngestor
-    from glyph.ingestors.source_code import SourceCodeIngestor
-
-    if ingestor_type == "godot_xml":
-        return GodotXMLIngestor(
-            settings["path"],
-            source_id,
-            include_patterns=settings.get("include_patterns"),
-            exclude_patterns=settings.get("exclude_patterns"),
-        )
-    elif ingestor_type == "html":
-        return HTMLIngestor(
-            settings["base_url"],
-            source_id,
-            max_pages=settings.get("max_pages", 500),
-            delay=settings.get("delay", 0.2),
-            include_patterns=settings.get("include_patterns"),
-            exclude_patterns=settings.get("exclude_patterns"),
-            max_concurrent=settings.get("max_concurrent", 10),
-        )
-    elif ingestor_type == "source_code":
-        return SourceCodeIngestor(
-            settings["path"],
-            source_id,
-            extensions=settings.get("extensions"),
-            exclude_dirs=settings.get("exclude_dirs"),
-            exclude_patterns=settings.get("exclude_patterns"),
-        )
-    elif ingestor_type == "unreal_doc":
-        from glyph.ingestors.unreal_doc import UnrealDocIngestor
-        return UnrealDocIngestor(settings["path"], source_id)
-    elif ingestor_type == "docs":
-        from glyph.ingestors.docs import DocsIngestor
-        return DocsIngestor(
-            settings["path"],
-            source_id,
-            extensions=settings.get("extensions"),
-            include_patterns=settings.get("include_patterns"),
-            exclude_patterns=settings.get("exclude_patterns"),
-            exclude_dirs=settings.get("exclude_dirs"),
-        )
-    return None
+    summary = await run_ingest(
+        cfg,
+        source_filter=source_filter,
+        skip_embeddings=skip_embeddings,
+        strict=strict,
+    )
+    logger.info(
+        f"Ingest complete: {summary['total_documents']} documents, "
+        f"{summary['total_chunks']} chunks across {len(summary['sources'])} sources"
+    )
 
 
 @cli.command()
@@ -242,21 +91,82 @@ def export(ctx: click.Context, source: str, version: str) -> None:
 
 
 async def _export(config_path: str, source_name: str, source_version: str) -> None:
-    from glyph.exporters.markdown import MarkdownExporter
-    from glyph.store import PostgresStore
+    from glyph.pipeline import run_export
 
     cfg = load_config(config_path)
-    store = PostgresStore(cfg.database.url, cfg.embedder.dimensions)
-    await _connect_store(store)
-
-    chunks = await store.get_all_chunks(source_name, source_version)
-    logger.info(f"Exporting {len(chunks)} chunks for {source_name} v{source_version}")
-
-    exporter = MarkdownExporter(cfg.output.directory)
-    output_path = exporter.export(chunks, source_name, source_version)
+    output_path = await run_export(cfg, source_name, source_version)
     logger.info(f"Export complete: {output_path}")
 
-    await store.close()
+
+@cli.command()
+@click.option("--path", "-p", required=True, type=click.Path(exists=True), help="Repository path to reindex")
+@click.option("--files", "-f", multiple=True, help="Specific files to reindex (can be repeated)")
+@click.option("--name", "-n", help="Override source name")
+@click.option("--version", "-V", help="Override source version")
+@click.option("--skip-embeddings", is_flag=True, help="Skip embedding generation")
+@click.option("--strict", is_flag=True, help="Fail hard if embedding endpoints are unreachable")
+@click.pass_context
+def reindex(
+    ctx: click.Context,
+    path: str,
+    files: tuple[str, ...],
+    name: str | None,
+    version: str | None,
+    skip_embeddings: bool,
+    strict: bool,
+) -> None:
+    """Reindex a repository (or specific files within it).
+
+    Uses .glyph.yaml from the repo if present, otherwise auto-discovers.
+    Database and embedder settings come from the global config or -c flag.
+    """
+    asyncio.run(_reindex(
+        ctx.obj["config_path"], path, list(files) or None,
+        name, version, skip_embeddings, strict,
+    ))
+
+
+async def _reindex(
+    config_path: str,
+    repo_path: str,
+    files: list[str] | None,
+    name_override: str | None,
+    version_override: str | None,
+    skip_embeddings: bool,
+    strict: bool,
+) -> None:
+    from glyph.config import load_global_config, resolve_config_for_repo
+    from glyph.pipeline import run_ingest
+
+    # Try loading as full config first (backwards compat), fall back to global
+    config_file = Path(config_path)
+    if config_file.exists():
+        try:
+            global_cfg = load_config(config_path)
+        except (KeyError, TypeError):
+            global_cfg = load_global_config(config_path)
+    else:
+        global_cfg = load_global_config()
+
+    global_cfg, source_cfg = resolve_config_for_repo(
+        repo_path,
+        global_config=global_cfg,
+        name_override=name_override,
+        version_override=version_override,
+    )
+
+    summary = await run_ingest(
+        global_cfg,
+        source_configs=[source_cfg],
+        skip_embeddings=skip_embeddings,
+        strict=strict,
+        file_filter=files,
+    )
+
+    logger.info(
+        f"Reindex complete: {summary['total_documents']} documents, "
+        f"{summary['total_chunks']} chunks"
+    )
 
 
 @cli.command()

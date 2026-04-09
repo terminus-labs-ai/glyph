@@ -1,0 +1,23 @@
+# Per-repo Glyph config (.glyph.yaml)
+#
+# Place this file in your project root as .glyph.yaml
+# Only defines source identity and ingestor preferences.
+# Database and embedder settings come from the global config
+# (~/.config/glyph/config.yaml) or the -c flag.
+
+name: "my-project"
+version: "auto"           # "auto" = git tag > branch > "latest"
+
+ingestors:
+  # Source code analysis
+  - type: source_code
+    path: "."              # relative to repo root
+    extensions: [".py"]
+    include_bodies: false  # true = full function bodies, false = signatures + docstrings
+    exclude_dirs: ["tests", "benchmarks", ".venv"]
+    exclude_patterns: ["_generated", "conftest.py"]
+
+  # Documentation (optional)
+  - type: docs
+    path: "./docs"
+    extensions: [".md", ".rst"]

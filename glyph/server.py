@@ -8,8 +8,9 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-from glyph.config import load_config
+from glyph.config import load_config, load_global_config, resolve_config_for_repo
 from glyph.embedders.llama import LlamaEmbedder
+from glyph.pipeline import run_export, run_ingest
 from glyph.store import PostgresStore
 
 logger = logging.getLogger(__name__)
@@ -151,6 +152,141 @@ class GlyphServer:
                 return "No sources indexed."
 
             return _format_sources(sources)
+
+        @self.mcp.tool()
+        async def ingest_repo(
+            path: str,
+            name: str | None = None,
+            version: str | None = None,
+            skip_embeddings: bool = False,
+            strict: bool = False,
+        ) -> str:
+            """Ingest a repository into the Glyph knowledge base.
+
+            Indexes source code and documentation from a local directory.
+            Uses .glyph.yaml from the repo root if present, otherwise
+            auto-discovers languages and structure.
+
+            Args:
+                path: Absolute path to the repository directory
+                name: Override the source name (default: directory name)
+                version: Override the version (default: git tag/branch or "latest")
+                skip_embeddings: Skip embedding generation for faster indexing
+                strict: Fail hard if embedding endpoints are unreachable
+            """
+            try:
+                global_cfg = load_config(self._config_path)
+            except Exception:
+                global_cfg = load_global_config()
+
+            if global_cfg is None:
+                return "Error: No global config found. Configure database and embedder settings."
+
+            try:
+                config, source_cfg = resolve_config_for_repo(
+                    path,
+                    global_config=global_cfg,
+                    name_override=name,
+                    version_override=version,
+                )
+            except ValueError as e:
+                return f"Error: {e}"
+            except FileNotFoundError:
+                return f"Error: Directory not found: {path}"
+
+            try:
+                summary = await run_ingest(
+                    config,
+                    source_configs=[source_cfg],
+                    skip_embeddings=skip_embeddings,
+                    strict=strict,
+                )
+                sources = summary["sources"]
+                source_info = sources[0] if sources else {"name": source_cfg.name, "version": source_cfg.version}
+                return (
+                    f"Indexed **{source_info['name']}** v{source_info['version']}: "
+                    f"{summary['total_documents']} documents, {summary['total_chunks']} chunks"
+                )
+            except Exception as e:
+                logger.exception("Ingest failed")
+                return f"Error during ingest: {e}"
+
+        @self.mcp.tool()
+        async def export_source(
+            source: str,
+            version: str,
+        ) -> str:
+            """Export an indexed source as tiered markdown files.
+
+            Generates three tiers of markdown output:
+            - Tier 1: Index with class/module names and one-line summaries
+            - Tier 2: Class summaries with member lists
+            - Tier 3: Full detail for each class/module
+
+            Args:
+                source: Source name (e.g., "godot", "my-project")
+                version: Source version (e.g., "4.4", "main")
+            """
+            try:
+                config = load_config(self._config_path)
+            except Exception:
+                config = load_global_config()
+
+            if config is None:
+                return "Error: No config found."
+
+            try:
+                output_path = await run_export(config, source, version)
+                return f"Exported **{source}** v{version} to `{output_path}`"
+            except Exception as e:
+                logger.exception("Export failed")
+                return f"Error during export: {e}"
+
+        @self.mcp.tool()
+        async def reindex(
+            path: str,
+            files: list[str] | None = None,
+            skip_embeddings: bool = False,
+        ) -> str:
+            """Reindex a repository or specific files within it.
+
+            For incremental updates after code changes. If specific files
+            are provided, only those files are re-processed. Otherwise,
+            runs a full re-ingest (content hashing skips unchanged files).
+
+            Args:
+                path: Absolute path to the repository directory
+                files: Specific file paths to reindex (for incremental updates)
+                skip_embeddings: Skip embedding generation
+            """
+            try:
+                global_cfg = load_config(self._config_path)
+            except Exception:
+                global_cfg = load_global_config()
+
+            if global_cfg is None:
+                return "Error: No config found."
+
+            try:
+                config, source_cfg = resolve_config_for_repo(path, global_config=global_cfg)
+            except ValueError as e:
+                return f"Error: {e}"
+
+            try:
+                summary = await run_ingest(
+                    config,
+                    source_configs=[source_cfg],
+                    skip_embeddings=skip_embeddings,
+                    file_filter=files,
+                )
+                file_msg = f" ({len(files)} files)" if files else ""
+                return (
+                    f"Reindexed **{source_cfg.name}** v{source_cfg.version}{file_msg}: "
+                    f"{summary['total_documents']} documents, {summary['total_chunks']} chunks"
+                )
+            except Exception as e:
+                logger.exception("Reindex failed")
+                return f"Error during reindex: {e}"
 
     def _register_resources(self) -> None:
         @self.mcp.resource("glyph://sources")

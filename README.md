@@ -55,6 +55,8 @@ All commands accept `-c <path>` to specify a config file (default: `glyph.yaml`)
 | `glyph ingest --skip-embeddings` | Ingest and chunk without generating embeddings |
 | `glyph export -s NAME -V VERSION` | Export chunks as tiered markdown |
 | `glyph stats` | Show source/document/chunk counts |
+| `glyph reindex -p /path/to/repo` | Reindex a repo using `.glyph.yaml` or auto-discovery |
+| `glyph reindex -p . -f src/main.py` | Reindex specific files (incremental) |
 | `glyph serve` | Start MCP server (default: stdio transport) |
 | `glyph serve -t sse -H 0.0.0.0 -p 8420` | Start MCP server with SSE transport |
 
@@ -347,6 +349,9 @@ Glyph includes an MCP (Model Context Protocol) server, enabling any MCP-compatib
 | `lookup` | Exact match by `qualified_name` (e.g., `Node2D.get_position`) |
 | `get_context` | Full class/module overview — all members grouped by type |
 | `list_sources` | List all indexed sources with document/chunk counts |
+| `ingest_repo` | Index a repository (uses `.glyph.yaml` or auto-discovers) |
+| `export_source` | Export an indexed source as tiered markdown |
+| `reindex` | Incremental re-index of a repo or specific files |
 
 ### Resources
 
@@ -400,6 +405,108 @@ Glyph includes an MCP (Model Context Protocol) server, enabling any MCP-compatib
 
 ```bash
 npx @modelcontextprotocol/inspector uv run glyph serve
+```
+
+### Per-Repo Configuration (`.glyph.yaml`)
+
+Instead of adding every repo to your central `glyph.yaml`, you can place a `.glyph.yaml` in any project's root directory. This file defines only the source identity and ingestor preferences — database and embedder config come from the server's global config.
+
+```yaml
+name: "my-project"
+version: "auto"           # "auto" = git tag or branch name
+ingestors:
+  - type: source_code
+    path: "."
+    extensions: [".py"]
+    include_bodies: false
+    exclude_dirs: ["tests", "benchmarks", ".venv"]
+  - type: docs
+    path: "./docs"
+    extensions: [".md"]
+```
+
+When `version` is set to `"auto"`, Glyph resolves it at ingest time:
+1. `git describe --tags --abbrev=0` (latest tag)
+2. `git branch --show-current` (current branch)
+3. `"latest"` (fallback)
+
+If no `.glyph.yaml` exists, Glyph auto-discovers by scanning the directory for known file extensions and deriving the source name from the directory name.
+
+### Claude Code Integration
+
+#### CLAUDE.md Instructions
+
+Add this to your project's `CLAUDE.md` (or global `~/.claude/CLAUDE.md`) to instruct Claude to use Glyph for API lookups:
+
+```markdown
+## Glyph Knowledge Base
+
+Before exploring external codebases or searching the web for API documentation,
+check Glyph first.
+
+- At session start, call `list_sources` to see what's indexed.
+- For API questions: `search("your question", source="source-name")`
+- For specific symbols: `lookup("ClassName.methodName")`
+- For full class docs: `get_context(parent_name="ClassName")`
+- Only fall back to web search or file exploration if Glyph has no relevant source.
+```
+
+#### Hooks
+
+Claude Code [hooks](https://docs.anthropic.com/en/docs/claude-code/hooks) can automate Glyph operations. Add these to your project's `.claude/settings.json`:
+
+**Auto-ingest after code changes:**
+
+```json
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "command": "glyph reindex --path . --files \"$CLAUDE_FILE_PATH\" 2>/dev/null || true"
+      }
+    ]
+  }
+}
+```
+
+**Remind Claude to check Glyph before exploring:**
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "WebSearch|WebFetch",
+        "command": "echo 'Check if Glyph has this indexed (list_sources / search) before searching the web.'"
+      }
+    ]
+  }
+}
+```
+
+### GitHub Actions
+
+Glyph ships as a reusable composite GitHub Action for CI indexing:
+
+```yaml
+- uses: terminus-labs-ai/glyph@main
+  with:
+    config: |
+      database:
+        url: "${{ secrets.GLYPH_DB_URL }}"
+      embedder:
+        url: "${{ secrets.EMBEDDER_URL }}"
+        model: "nomic-embed-text"
+        dimensions: 512
+      sources:
+        - name: my-project
+          version: "${{ github.ref_name }}"
+          ingestors:
+            - type: source_code
+              path: "."
+              extensions: [".py"]
+    commands: "init-db ingest"
 ```
 
 ## Architecture
