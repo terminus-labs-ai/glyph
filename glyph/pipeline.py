@@ -150,10 +150,11 @@ async def _ingest_source(
 
         # Filter to specific files if requested (for incremental reindex)
         if file_filter:
+            source_root = Path(ing_cfg.settings.get("path", ".")).resolve()
             normalized_filter = {str(Path(f).resolve()) for f in file_filter}
             documents = [
                 d for d in documents
-                if str(Path(d.path).resolve()) in normalized_filter
+                if str((source_root / d.path).resolve()) in normalized_filter
             ]
             logger.info(f"Filtered to {len(documents)} documents matching file filter")
 
