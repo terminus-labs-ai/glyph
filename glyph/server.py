@@ -9,8 +9,10 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 from glyph.config import load_config, load_global_config, resolve_config_for_repo
+from glyph.domain.models import ChunkType
 from glyph.embedders.llama import LlamaEmbedder
 from glyph.pipeline import run_export, run_ingest
+from glyph.rerankers import LlamaReranker
 from glyph.store import PostgresStore
 
 logger = logging.getLogger(__name__)
@@ -23,6 +25,7 @@ class GlyphServer:
         self._config_path = config_path
         self._store: PostgresStore | None = None
         self._embedder: LlamaEmbedder | None = None
+        self._reranker: LlamaReranker | None = None
         self.mcp = FastMCP(
             "glyph",
             instructions="Glyph knowledge base server. Search API docs, look up classes/functions, and browse indexed sources.",
@@ -42,6 +45,13 @@ class GlyphServer:
             cfg.embedder.dimensions,
             cfg.embedder.batch_size,
         )
+        if cfg.reranker:
+            self._reranker = LlamaReranker(
+                cfg.reranker.url,
+                cfg.reranker.model,
+                cfg.reranker.batch_size,
+                cfg.reranker.timeout,
+            )
         logger.info("Glyph MCP server started")
         try:
             yield {}
@@ -58,6 +68,8 @@ class GlyphServer:
             chunk_types: list[str] | None = None,
             parent: str | None = None,
             limit: int = 10,
+            rerank: bool = True,
+            candidates: int = 50,
         ) -> str:
             """Search the Glyph knowledge base using hybrid semantic + keyword search.
 
@@ -67,29 +79,32 @@ class GlyphServer:
                 version: Filter to a specific version
                 chunk_types: Filter by chunk type (e.g., ["method", "property"])
                 parent: Filter to chunks under a specific parent (e.g., "Node2D")
-                limit: Number of results (default 10, max 50)
+                limit: Number of results to return (default 10, max 50)
+                rerank: Re-rank results using a cross-encoder reranker (default True,
+                        ignored if no reranker is configured)
+                candidates: Number of candidate chunks to fetch from pgvector before
+                            reranking (default 50, only used when rerank=True)
             """
             if not self._store or not self._embedder:
                 return "Error: Server not initialized"
 
             limit = max(1, min(limit, 50))
+            candidates = max(limit, candidates)
 
-            embedding = None
-            try:
-                embeddings = await self._embedder.embed([query])
-                embedding = embeddings[0]
-            except Exception as e:
-                logger.warning(f"Embedding unavailable, falling back to keyword search: {e}")
-
-            results = await self._store.hybrid_search(
-                query,
-                embedding,
-                source_name=source,
-                source_version=version,
-                chunk_types=chunk_types,
-                parent_name=parent,
-                limit=limit,
+            # Determine retrieval strategy
+            use_reranker = (
+                self._reranker is not None
+                and rerank
             )
+
+            if use_reranker:
+                results = await self._search_with_rerank(
+                    query, candidates, source, version, chunk_types, parent, limit,
+                )
+            else:
+                results = await self._search_hybrid(
+                    query, source, version, chunk_types, parent, limit,
+                )
 
             if not results:
                 filters = _describe_filters(source=source, version=version, parent=parent, chunk_types=chunk_types)
@@ -288,6 +303,99 @@ class GlyphServer:
                 logger.exception("Reindex failed")
                 return f"Error during reindex: {e}"
 
+    # --- Retrieval helpers ---
+
+    async def _search_hybrid(
+        self,
+        query: str,
+        source_name: str | None,
+        source_version: str | None,
+        chunk_types: list[str] | None,
+        parent_name: str | None,
+        limit: int,
+    ) -> list[dict]:
+        """Hybrid search: FTS + vector via RRF fusion."""
+        embedding = None
+        try:
+            embeddings = await self._embedder.embed([query])
+            embedding = embeddings[0]
+        except Exception as e:
+            logger.warning(f"Embedding unavailable, falling back to keyword search: {e}")
+
+        return await self._store.hybrid_search(
+            query,
+            embedding,
+            source_name=source_name,
+            source_version=source_version,
+            chunk_types=chunk_types,
+            parent_name=parent_name,
+            limit=limit,
+        )
+
+    async def _search_with_rerank(
+        self,
+        query: str,
+        n_candidates: int,
+        source_name: str | None,
+        source_version: str | None,
+        chunk_types: list[str] | None,
+        parent_name: str | None,
+        limit: int,
+    ) -> list[dict]:
+        """Two-stage retrieval: embed → pgvector → rerank."""
+        # Stage 1: embed query and fetch top candidates from pgvector
+        embedding = None
+        try:
+            embeddings = await self._embedder.embed([query])
+            embedding = embeddings[0]
+        except Exception as e:
+            logger.warning(f"Embedding unavailable, falling back to keyword search: {e}")
+            if embedding is None:
+                # No embedding at all, fall back to hybrid search
+                return await self._search_hybrid(
+                    query, source_name, source_version,
+                    chunk_types, parent_name, limit,
+                )
+
+        chunk_type_enums = (
+            [ChunkType(ct) for ct in chunk_types] if chunk_types else None
+        )
+        # Use the store's search method which returns content
+        candidates = await self._store.search(
+            embedding,
+            source_name=source_name,
+            source_version=source_version,
+            chunk_types=None,
+            parent_name=parent_name,
+            limit=n_candidates,
+        )
+
+        if not candidates:
+            return []
+
+        if len(candidates) == 1:
+            # Single candidate — no need to rerank
+            candidates[0]["rerank_score"] = candidates[0].get("similarity", 1.0)
+            return candidates
+
+        # Stage 2: rerank candidates
+        doc_texts = [c.get("content", "") for c in candidates]
+        try:
+            scores = await self._reranker.rerank(query, doc_texts)
+            if len(scores) == len(candidates):
+                for i, c in enumerate(candidates):
+                    c["rerank_score"] = scores[i]
+                candidates.sort(key=lambda c: c["rerank_score"], reverse=True)
+                return candidates[:limit]
+        except Exception as e:
+            logger.warning(
+                f"Reranking failed, falling back to embedding-only order: {e}",
+            )
+
+        # Fallback: sort by embedding similarity
+        candidates.sort(key=lambda c: c.get("similarity", 0.0), reverse=True)
+        return candidates[:limit]
+
     def _register_resources(self) -> None:
         @self.mcp.resource("glyph://sources")
         async def sources_resource() -> str:
@@ -386,13 +494,16 @@ def _format_search_results(results: list[dict[str, Any]]) -> str:
     for r in results:
         score = r.get("score", 0)
         retrieval = r.get("retrieval", "hybrid")
-        tag = f"[{retrieval}]"
+        rerank_score = r.get("rerank_score")
+        tag = f"[{retrieval}]" if not rerank_score else f"[reranked]"
         lines.append(f"### {r['qualified_name']} {tag}")
         lines.append(
             f"**Type:** {r['chunk_type']} | "
             f"**Source:** {r['source_name']} {r['source_version']} | "
             f"**Score:** {score:.3f}"
         )
+        if rerank_score is not None:
+            lines.append(f"**Rerank Score:** {rerank_score:.3f}")
         if r.get("parent_name"):
             lines.append(f"**Parent:** {r['parent_name']}")
         lines.append("")

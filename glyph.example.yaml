@@ -8,6 +8,15 @@ embedder:
   dimensions: 512
   batch_size: 5
 
+# Optional two-stage retrieval reranker
+# When configured, search uses embed → pgvector → rerank for higher quality
+# reranker:
+#   type: "llama"
+#   url: "http://localhost:11434"
+#   model: "qwen3-reranker"
+#   batch_size: 32
+#   timeout: 30
+
 sources:
   - name: godot
     version: "4.4"

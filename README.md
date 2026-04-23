@@ -10,6 +10,7 @@ Convert API documentation and source code into structured RAG knowledge bases. I
 - **Tiered markdown export** -- index (minimal tokens) / summary (moderate) / detail (full) for context-efficient LLM use
 - **Incremental updates** -- content hashing skips unchanged documents on re-ingest
 - **Configurable embeddings** -- pluggable embedding backend (ships with llama-server support)
+- **Two-stage retrieval** -- optional cross-encoder reranker for higher-quality search (when configured)
 - **Pluggable architecture** -- add new languages, doc sources, or export formats by implementing a Protocol
 
 ## Install
@@ -83,6 +84,26 @@ embedder:
 ```
 
 The llama embedder auto-detects OpenAI-compatible, Ollama, and llama.cpp API formats.
+
+### Reranker (optional)
+
+Add a cross-encoder reranker for two-stage retrieval. When configured, the `search` tool uses
+embed → pgvector → rerank for higher-quality results. This is transparent to callers — pass
+`rerank=True` (default when a reranker is configured) to enable it.
+
+```yaml
+reranker:
+  type: "llama"                  # Reranker backend
+  url: "http://localhost:11434"  # llama-server / Ollama URL
+  model: "qwen3-reranker"        # Model name
+  batch_size: 32                 # Docs per request
+  timeout: 30                    # Seconds per request
+```
+
+**How it works:** The search tool fetches the top N candidates (default 50) from pgvector via
+semantic similarity, then scores each with the cross-encoder reranker. Results are sorted by
+rerank_score and the top K are returned. Falls back to embedding-only order if the reranker
+is unreachable.
 
 ### Sources
 
@@ -337,6 +358,23 @@ class MyEmbedder:
         ...
 ```
 
+### Add a new reranker
+
+Implement the `Reranker` protocol:
+
+```python
+class MyReranker:
+    async def rerank(self, query: str, documents: list[str]) -> list[float]:
+        """Return one relevance score per document, same order as input."""
+        ...
+```
+
+Register it by creating `glyph/rerankers/your_reranker.py`, exporting from
+`glyph/rerankers/__init__.py`, and wiring config parsing in `config.py`.
+
+See `glyph/rerankers/llama.py` for a reference implementation targeting
+llama-server's `/v1/rerank` endpoint.
+
 ## MCP Integration
 
 Glyph includes an MCP (Model Context Protocol) server, enabling any MCP-compatible client to query the knowledge base at runtime.
@@ -509,6 +547,33 @@ Glyph ships as a reusable composite GitHub Action for CI indexing:
     commands: "init-db ingest"
 ```
 
+## Two-Stage Retrieval
+
+When a `reranker:` block is configured, Glyph uses a two-stage retrieval pipeline for
+higher-quality results:
+
+```
+Query
+  → Embedder (produces vector)
+    → pgvector similarity search → top N candidates (default 50)
+      → Reranker (cross-encoder) → relevance scores per candidate
+        → Sort by rerank_score → return top K (default 10)
+```
+
+**When to use reranking:**
+- Reranking improves precision when the embedding model and reranker model are complementary
+  (e.g., a small embedding model + a larger cross-encoder reranker).
+- The `candidates` parameter controls how many candidates are fetched from pgvector before
+  reranking. A higher value (50–100) gives the reranker more options but costs more.
+- The `limit` parameter controls how many final results to return. Typically `limit << candidates`.
+- When the reranker is unavailable, Glyph falls back to embedding-only order.
+- Pass `rerank=False` to disable reranking even when a reranker is configured.
+
+**When NOT to use reranking:**
+- If you only have one embedding model and no reranker, the default hybrid search (FTS +
+  vector RRF) is sufficient.
+- If latency is critical, skip reranking to avoid the extra API call.
+
 ## Architecture
 
 ```
@@ -538,6 +603,9 @@ glyph/
 ├── embedders/
 │   ├── base.py               # Embedder Protocol
 │   └── llama.py              # llama-server / Ollama client
+├── rerankers/
+│   ├── base.py               # Reranker Protocol
+│   └── llama.py              # llama-server /v1/rerank client
 ├── store/
 │   └── postgres.py           # PostgreSQL + pgvector
 ├── exporters/

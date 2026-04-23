@@ -43,12 +43,13 @@ def _make_chunk(
     return result
 
 
-def _build_test_server(mock_store, mock_embedder) -> GlyphServer:
+def _build_test_server(mock_store, mock_embedder, mock_reranker=None) -> GlyphServer:
     with patch("glyph.server.load_config"):
         srv = GlyphServer.__new__(GlyphServer)
         srv._config_path = "test.yaml"
         srv._store = mock_store
         srv._embedder = mock_embedder
+        srv._reranker = mock_reranker
         srv.mcp = FastMCP("test")
         srv._register_tools()
         srv._register_resources()

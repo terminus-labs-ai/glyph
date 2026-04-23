@@ -201,6 +201,8 @@ async def _stats(config_path: str) -> None:
 @click.option("--type", "chunk_types", help="Comma-separated chunk types (e.g. method,property)")
 @click.option("--parent", help="Filter to chunks under a specific parent (e.g. Node2D)")
 @click.option("--limit", default=10, show_default=True, help="Number of results")
+@click.option("--rerank/--no-rerank", default=None, help="Enable/disable reranking (default: auto)")
+@click.option("--candidates", default=50, show_default=True, help="Candidates for pgvector before rerank")
 @click.pass_context
 def search(
     ctx: click.Context,
@@ -210,9 +212,11 @@ def search(
     chunk_types: str | None,
     parent: str | None,
     limit: int,
+    rerank: bool | None,
+    candidates: int,
 ) -> None:
     """Search the knowledge base using hybrid semantic + keyword search."""
-    asyncio.run(_search(ctx.obj["config_path"], query, source, version, chunk_types, parent, limit))
+    asyncio.run(_search(ctx.obj["config_path"], query, source, version, chunk_types, parent, limit, rerank, candidates))
 
 
 async def _search(
@@ -223,8 +227,11 @@ async def _search(
     chunk_types_str: str | None,
     parent: str | None,
     limit: int,
+    rerank: bool | None,
+    n_candidates: int,
 ) -> None:
     from glyph.embedders.llama import LlamaEmbedder
+    from glyph.rerankers import LlamaReranker
     from glyph.store import PostgresStore
 
     cfg = load_config(config_path)
@@ -233,28 +240,92 @@ async def _search(
 
     chunk_types = [t.strip() for t in chunk_types_str.split(",")] if chunk_types_str else None
 
-    embedding = None
-    try:
-        embedder = LlamaEmbedder(
-            cfg.embedder.url,
-            cfg.embedder.model,
-            cfg.embedder.dimensions,
-            cfg.embedder.batch_size,
-        )
-        embeddings = await embedder.embed([query])
-        embedding = embeddings[0]
-    except Exception as e:
-        logger.debug(f"Embedding unavailable, falling back to keyword search: {e}")
+    # Determine if reranking is available and desired
+    reranker_available = cfg.reranker is not None
+    use_rerank = rerank if rerank is not None else reranker_available
 
-    results = await store.hybrid_search(
-        query,
-        embedding,
-        source_name=source,
-        source_version=version,
-        chunk_types=chunk_types,
-        parent_name=parent,
-        limit=limit,
-    )
+    if use_rerank and reranker_available:
+        # Two-stage: embed → pgvector → rerank
+        embedding = None
+        try:
+            embedder = LlamaEmbedder(
+                cfg.embedder.url,
+                cfg.embedder.model,
+                cfg.embedder.dimensions,
+                cfg.embedder.batch_size,
+            )
+            embeddings = await embedder.embed([query])
+            embedding = embeddings[0]
+        except Exception as e:
+            logger.warning(f"Embedding unavailable, falling back to keyword search: {e}")
+
+        if embedding is not None:
+            candidates = await store.search(
+                embedding,
+                source_name=source,
+                source_version=version,
+                chunk_types=None,
+                parent_name=parent,
+                limit=n_candidates,
+            )
+
+            if candidates:
+                doc_texts = [c.get("content", "") for c in candidates]
+                reranker = LlamaReranker(
+                    cfg.reranker.url,
+                    cfg.reranker.model,
+                    cfg.reranker.batch_size,
+                    cfg.reranker.timeout,
+                )
+                try:
+                    scores = await reranker.rerank(query, doc_texts)
+                    if len(scores) == len(candidates):
+                        for i, c in enumerate(candidates):
+                            c["rerank_score"] = scores[i]
+                        candidates.sort(key=lambda c: c["rerank_score"], reverse=True)
+                    else:
+                        logger.warning("Reranker returned wrong number of scores, using embedding order")
+                except Exception as e:
+                    logger.warning(f"Reranking failed, falling back to embedding-only order: {e}")
+                    candidates.sort(key=lambda c: c.get("similarity", 0.0), reverse=True)
+
+                results = candidates[:limit]
+            else:
+                results = []
+        else:
+            # No embedding, fall back to hybrid
+            results = await store.hybrid_search(
+                query, None,
+                source_name=source,
+                source_version=version,
+                chunk_types=chunk_types,
+                parent_name=parent,
+                limit=limit,
+            )
+    else:
+        # Standard hybrid search
+        embedding = None
+        try:
+            embedder = LlamaEmbedder(
+                cfg.embedder.url,
+                cfg.embedder.model,
+                cfg.embedder.dimensions,
+                cfg.embedder.batch_size,
+            )
+            embeddings = await embedder.embed([query])
+            embedding = embeddings[0]
+        except Exception as e:
+            logger.debug(f"Embedding unavailable, falling back to keyword search: {e}")
+
+        results = await store.hybrid_search(
+            query,
+            embedding,
+            source_name=source,
+            source_version=version,
+            chunk_types=chunk_types,
+            parent_name=parent,
+            limit=limit,
+        )
 
     await store.close()
 
@@ -263,7 +334,9 @@ async def _search(
         return
 
     for i, r in enumerate(results, 1):
-        tag = r.get("retrieval_tag", "")
+        rerank_score = r.get("rerank_score")
+        retrieval = r.get("retrieval", "hybrid")
+        tag = f"[reranked]" if rerank_score is not None else (r.get("retrieval_tag", "") or f"[{retrieval}]")
         score = r.get("score", 0.0)
         qualified_name = r.get("qualified_name") or r.get("heading") or "(unnamed)"
         chunk_type = r.get("chunk_type", "")
@@ -274,6 +347,8 @@ async def _search(
 
         header = click.style(f"{i}. {qualified_name}", bold=True)
         meta = click.style(f"  [{chunk_type}] {src} {tag} score={score:.4f}", fg="cyan")
+        if rerank_score is not None:
+            meta = click.style(f"  [{chunk_type}] {src} {tag} rerank={rerank_score:.4f}", fg="cyan")
         click.echo(header)
         click.echo(meta)
         if summary:

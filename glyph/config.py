@@ -61,6 +61,15 @@ class EmbedderConfig:
 
 
 @dataclass
+class RerankerConfig:
+    type: str = "llama"
+    url: str = "http://localhost:11434"
+    model: str = "qwen3-reranker"
+    batch_size: int = 32
+    timeout: int = 30
+
+
+@dataclass
 class IngestorConfig:
     type: str
     # Flexible per-ingestor settings
@@ -101,6 +110,7 @@ class Config:
     embedder: EmbedderConfig
     sources: list[SourceConfig]
     output: OutputConfig
+    reranker: RerankerConfig | None = None
     defaults: DefaultsConfig = field(default_factory=DefaultsConfig)
 
 
@@ -287,6 +297,15 @@ def _parse_full_config(raw: dict) -> Config:
         batch_size=emb.get("batch_size", 5),
     )
 
+    rer = raw.get("reranker")
+    reranker = RerankerConfig(
+        type=rer.get("type", "llama"),
+        url=rer.get("url", "http://localhost:11434"),
+        model=rer.get("model", "qwen3-reranker"),
+        batch_size=rer.get("batch_size", 32),
+        timeout=rer.get("timeout", 30),
+    ) if rer else None
+
     sources = []
     for src in raw.get("sources", []):
         ingestors = []
@@ -316,6 +335,7 @@ def _parse_full_config(raw: dict) -> Config:
     return Config(
         database=database,
         embedder=embedder,
+        reranker=reranker,
         sources=sources,
         output=output,
         defaults=defaults,

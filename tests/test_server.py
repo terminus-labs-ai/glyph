@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from mcp.server.fastmcp import FastMCP
 
+from glyph.rerankers import LlamaReranker
 from glyph.server import (
     GlyphServer,
     _format_chunk_detail,
@@ -69,13 +70,14 @@ def _make_source(
     }
 
 
-def _build_test_server(mock_store, mock_embedder) -> GlyphServer:
+def _build_test_server(mock_store, mock_embedder, mock_reranker=None) -> GlyphServer:
     """Create a GlyphServer with mocked dependencies, bypassing lifespan."""
     with patch("glyph.server.load_config"):
         srv = GlyphServer.__new__(GlyphServer)
         srv._config_path = "test.yaml"
         srv._store = mock_store
         srv._embedder = mock_embedder
+        srv._reranker = mock_reranker
         srv.mcp = FastMCP("test")
         srv._register_tools()
         srv._register_resources()
@@ -95,6 +97,15 @@ def mock_embedder():
     embedder = AsyncMock()
     embedder.embed = AsyncMock(return_value=[[0.1] * 512])
     return embedder
+
+
+@pytest.fixture
+def mock_reranker():
+    reranker = AsyncMock()
+    reranker.rerank = AsyncMock(
+        return_value=[0.9, 0.7, 0.5, 0.3, 0.1],
+    )
+    return reranker
 
 
 # --- Formatter tests ---
@@ -328,3 +339,126 @@ class TestListSourcesTool:
 
         result = await srv.mcp._tool_manager.call_tool("list_sources", {})
         assert "No sources indexed" in result
+
+
+# --- Reranker tool tests ---
+
+
+class TestSearchRerankTool:
+    """Tests for two-stage retrieval with reranker."""
+
+    async def test_rerank_path_takes_vector_then_rerank(
+        self, mock_store, mock_embedder, mock_reranker
+    ):
+        mock_store.search = AsyncMock(return_value=[
+            _make_chunk(qualified_name="Node2D.get_position", heading="get_position",
+                        content="Returns position", similarity=0.3),
+            _make_chunk(qualified_name="Node2D.set_position", heading="set_position",
+                        content="Sets position", similarity=0.6),
+            _make_chunk(qualified_name="Node2D.position", heading="position",
+                        content="The position property", similarity=0.9),
+        ])
+        mock_reranker.rerank = AsyncMock(
+            return_value=[0.1, 0.95, 0.5],  # reorders: set_position first
+        )
+        srv = _build_test_server(mock_store, mock_embedder, mock_reranker)
+
+        result = await srv.mcp._tool_manager.call_tool("search", {
+            "query": "position", "rerank": True, "limit": 5, "candidates": 10,
+        })
+
+        # Should call store.search (vector) not hybrid_search
+        mock_store.search.assert_called_once()
+        assert mock_reranker.rerank.called
+        # Re-ordered by rerank_score: set_position (0.95) should be first
+        assert "Node2D.set_position" in result
+        assert "[reranked]" in result
+
+    async def test_rerank_false_uses_hybrid(
+        self, mock_store, mock_embedder, mock_reranker
+    ):
+        mock_store.hybrid_search = AsyncMock(return_value=[
+            _make_chunk(score=0.045, retrieval="hybrid"),
+        ])
+        srv = _build_test_server(mock_store, mock_embedder, mock_reranker)
+
+        result = await srv.mcp._tool_manager.call_tool("search", {
+            "query": "test", "rerank": False, "limit": 5,
+        })
+
+        mock_store.hybrid_search.assert_called_once()
+        assert "[hybrid]" in result
+        assert "[reranked]" not in result
+
+    async def test_no_reranker_ignores_rerank_param(
+        self, mock_store, mock_embedder
+    ):
+        mock_store.hybrid_search = AsyncMock(return_value=[
+            _make_chunk(score=0.045, retrieval="hybrid"),
+        ])
+        srv = _build_test_server(mock_store, mock_embedder, mock_reranker=None)
+
+        # rerank=True but no reranker configured → falls back to hybrid
+        result = await srv.mcp._tool_manager.call_tool("search", {
+            "query": "test", "rerank": True, "limit": 5,
+        })
+
+        mock_store.hybrid_search.assert_called_once()
+        mock_store.search.assert_not_called()
+
+    async def test_rerank_failure_falls_back(self, mock_store, mock_embedder, mock_reranker):
+        mock_store.search = AsyncMock(return_value=[
+            _make_chunk(qualified_name="Node2D.get_position", heading="get_position",
+                        content="Returns position", similarity=0.3),
+            _make_chunk(qualified_name="Node2D.set_position", heading="set_position",
+                        content="Sets position", similarity=0.6),
+        ])
+        mock_reranker.rerank = AsyncMock(side_effect=ConnectionError("timeout"))
+        srv = _build_test_server(mock_store, mock_embedder, mock_reranker)
+
+        result = await srv.mcp._tool_manager.call_tool("search", {
+            "query": "test", "rerank": True, "limit": 5,
+        })
+
+        # Should still return results, just not reranked
+        assert "Node2D.get_position" in result
+        assert "Node2D.set_position" in result
+        assert "Error" not in result
+
+    async def test_rerank_empty_candidates(self, mock_store, mock_embedder, mock_reranker):
+        mock_store.search = AsyncMock(return_value=[])
+        srv = _build_test_server(mock_store, mock_embedder, mock_reranker)
+
+        result = await srv.mcp._tool_manager.call_tool("search", {
+            "query": "test", "rerank": True, "limit": 5,
+        })
+
+        assert "No results found" in result
+        mock_reranker.rerank.assert_not_called()
+
+    async def test_rerank_single_candidate(self, mock_store, mock_embedder, mock_reranker):
+        mock_store.search = AsyncMock(return_value=[
+            _make_chunk(qualified_name="Node2D.get_position", heading="get_position",
+                        content="Returns position", similarity=0.5),
+        ])
+        srv = _build_test_server(mock_store, mock_embedder, mock_reranker)
+
+        result = await srv.mcp._tool_manager.call_tool("search", {
+            "query": "test", "rerank": True, "limit": 5,
+        })
+
+        mock_reranker.rerank.assert_not_called()
+        assert "Node2D.get_position" in result
+
+    async def test_rerank_limit_clamping(self, mock_store, mock_embedder, mock_reranker):
+        mock_store.search = AsyncMock(return_value=[])
+        srv = _build_test_server(mock_store, mock_embedder, mock_reranker)
+
+        await srv.mcp._tool_manager.call_tool("search", {
+            "query": "test", "limit": 999,
+        })
+
+        # limit should be clamped to 50
+        # Since reranker is configured, it calls search, not hybrid_search
+        kwargs = mock_store.search.call_args.kwargs
+        assert kwargs["limit"] == 50
