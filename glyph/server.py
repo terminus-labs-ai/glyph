@@ -359,16 +359,10 @@ class GlyphServer:
             return _format_context(class_name, chunks)
 
     def run(self, transport: str = "stdio", host: str = "127.0.0.1", port: int = 8420) -> None:
-        if transport == "sse":
-            self.mcp._host = host
-            self.mcp._port = port
-            self.mcp.run("sse")
-        elif transport == "streamable-http":
-            self.mcp._host = host
-            self.mcp._port = port
-            self.mcp.run("streamable-http")
-        else:
-            self.mcp.run("stdio")
+        if transport in ("sse", "streamable-http"):
+            self.mcp.settings.host = host
+            self.mcp.settings.port = port
+        self.mcp.run(transport)
 
 
 # --- Formatting helpers ---
