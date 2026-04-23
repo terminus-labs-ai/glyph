@@ -120,12 +120,23 @@ class TestLlamaReranker:
         assert scores == []
 
     async def test_single_document(self):
+        """Single document still goes through the API (no shortcut)."""
         reranker = LlamaReranker(
             url="http://localhost:11434",
             model="qwen3-reranker",
         )
-        scores = await reranker.rerank("query", ["single doc"])
-        assert scores == [1.0]
+
+        single_response = {
+            "results": [{"index": 0, "relevance_score": 0.88}],
+        }
+
+        with patch(
+            "glyph.rerankers.llama.aiohttp.ClientSession",
+            _AsyncSession(json_data=single_response),
+        ):
+            scores = await reranker.rerank("query", ["single doc"])
+
+        assert scores == [0.88]
 
     async def test_re_sort_to_input_order(self):
         """API returns results sorted by score — must be re-ordered to match input."""

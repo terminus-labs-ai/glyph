@@ -24,9 +24,6 @@ class LlamaReranker:
         if not documents:
             return []
 
-        if len(documents) == 1:
-            return [1.0]
-
         scores: list[float] = [0.0] * len(documents)
 
         for i in range(0, len(documents), self._batch_size):

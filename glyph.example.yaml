@@ -8,7 +8,7 @@ embedder:
   dimensions: 512
   batch_size: 5
 
-# Optional two-stage retrieval reranker
+# Optional two-stage retrieval reranker (see README "Reranker" section)
 # When configured, search uses embed → pgvector → rerank for higher quality
 # reranker:
 #   type: "llama"

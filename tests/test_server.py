@@ -462,3 +462,22 @@ class TestSearchRerankTool:
         # Since reranker is configured, it calls search, not hybrid_search
         kwargs = mock_store.search.call_args.kwargs
         assert kwargs["limit"] == 50
+
+    async def test_rerank_passes_chunk_types(self, mock_store, mock_embedder, mock_reranker):
+        mock_store.search = AsyncMock(return_value=[
+            _make_chunk(qualified_name="Node2D.get_position", heading="get_position",
+                        content="Returns position", similarity=0.5),
+            _make_chunk(qualified_name="Node2D.set_position", heading="set_position",
+                        content="Sets position", similarity=0.4),
+        ])
+        mock_reranker.rerank = AsyncMock(return_value=[0.9, 0.3])
+        srv = _build_test_server(mock_store, mock_embedder, mock_reranker)
+
+        result = await srv.mcp._tool_manager.call_tool("search", {
+            "query": "position", "rerank": True, "chunk_types": ["method"],
+        })
+
+        # chunk_types should be passed through to store.search
+        kwargs = mock_store.search.call_args.kwargs
+        assert kwargs["chunk_types"] == ["method"]
+        assert "Node2D.get_position" in result

@@ -1,4 +1,4 @@
-"""Reusable ingest/export/reindex pipeline.
+"""Reusable ingest/export/search/reindex pipeline.
 
 Decoupled from the CLI — can be called from MCP tools, scripts, or tests.
 """
@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Any
 
 from glyph.config import Config, SourceConfig
 from glyph.domain.models import DocType, Source
@@ -269,3 +270,143 @@ def _build_ingestor(ingestor_type: str, settings: dict, source_id):
             exclude_dirs=settings.get("exclude_dirs"),
         )
     return None
+
+
+async def run_search(
+    store: Any,
+    embedder: Any,
+    reranker: Any | None,
+    query: str,
+    *,
+    source_name: str | None = None,
+    source_version: str | None = None,
+    chunk_types: list[str] | None = None,
+    parent_name: str | None = None,
+    limit: int = 10,
+    rerank: bool = True,
+    n_candidates: int = 50,
+) -> list[dict]:
+    """Search the knowledge base.
+
+    When *reranker* is set and *rerank* is True, uses two-stage retrieval
+    (embed → pgvector → rerank). Otherwise falls back to hybrid search
+    (FTS + vector RRF fusion).
+
+    Returns a list of result dicts. Each dict may carry ``rerank_score`` when
+    the reranker path was taken.
+    """
+    if reranker is not None and rerank:
+        return await _search_with_rerank(
+            store, embedder, reranker,
+            query,
+            source_name=source_name,
+            source_version=source_version,
+            chunk_types=chunk_types,
+            parent_name=parent_name,
+            limit=limit,
+            n_candidates=n_candidates,
+        )
+    else:
+        return await _search_hybrid(
+            store, embedder,
+            query,
+            source_name=source_name,
+            source_version=source_version,
+            chunk_types=chunk_types,
+            parent_name=parent_name,
+            limit=limit,
+        )
+
+
+async def _search_hybrid(
+    store: Any,
+    embedder: Any,
+    query: str,
+    *,
+    source_name: str | None,
+    source_version: str | None,
+    chunk_types: list[str] | None,
+    parent_name: str | None,
+    limit: int,
+) -> list[dict]:
+    """Hybrid search: FTS + vector via RRF fusion."""
+    embedding = None
+    try:
+        embeddings = await embedder.embed([query])
+        embedding = embeddings[0]
+    except Exception as e:
+        logger.debug(f"Embedding unavailable, falling back to keyword search: {e}")
+
+    return await store.hybrid_search(
+        query,
+        embedding,
+        source_name=source_name,
+        source_version=source_version,
+        chunk_types=chunk_types,
+        parent_name=parent_name,
+        limit=limit,
+    )
+
+
+async def _search_with_rerank(
+    store: Any,
+    embedder: Any,
+    reranker: Any,
+    query: str,
+    *,
+    n_candidates: int,
+    source_name: str | None,
+    source_version: str | None,
+    chunk_types: list[str] | None,
+    parent_name: str | None,
+    limit: int,
+) -> list[dict]:
+    """Two-stage retrieval: embed → pgvector → rerank."""
+    embedding = None
+    try:
+        embeddings = await embedder.embed([query])
+        embedding = embeddings[0]
+    except Exception as e:
+        logger.warning(f"Embedding unavailable, falling back to keyword search: {e}")
+
+    if embedding is None:
+        # No embedding at all, fall back to hybrid search
+        return await _search_hybrid(
+            store, embedder,
+            query,
+            source_name=source_name,
+            source_version=source_version,
+            chunk_types=chunk_types,
+            parent_name=parent_name,
+            limit=limit,
+        )
+
+    candidates = await store.search(
+        embedding,
+        source_name=source_name,
+        source_version=source_version,
+        chunk_types=chunk_types,
+        parent_name=parent_name,
+        limit=n_candidates,
+    )
+
+    if not candidates:
+        return []
+
+    if len(candidates) == 1:
+        candidates[0]["rerank_score"] = candidates[0].get("similarity", 1.0)
+        return candidates
+
+    doc_texts = [c.get("content", "") for c in candidates]
+    try:
+        scores = await reranker.rerank(query, doc_texts)
+        if len(scores) == len(candidates):
+            for i, c in enumerate(candidates):
+                c["rerank_score"] = scores[i]
+            candidates.sort(key=lambda c: c["rerank_score"], reverse=True)
+            return candidates[:limit]
+    except Exception as e:
+        logger.warning(f"Reranking failed, falling back to embedding-only order: {e}")
+
+    candidates.sort(key=lambda c: c.get("similarity", 0.0), reverse=True)
+    return candidates[:limit]

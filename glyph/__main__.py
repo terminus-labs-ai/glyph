@@ -231,6 +231,7 @@ async def _search(
     n_candidates: int,
 ) -> None:
     from glyph.embedders.llama import LlamaEmbedder
+    from glyph.pipeline import run_search
     from glyph.rerankers import LlamaReranker
     from glyph.store import PostgresStore
 
@@ -244,88 +245,39 @@ async def _search(
     reranker_available = cfg.reranker is not None
     use_rerank = rerank if rerank is not None else reranker_available
 
-    if use_rerank and reranker_available:
-        # Two-stage: embed → pgvector → rerank
-        embedding = None
-        try:
-            embedder = LlamaEmbedder(
-                cfg.embedder.url,
-                cfg.embedder.model,
-                cfg.embedder.dimensions,
-                cfg.embedder.batch_size,
-            )
-            embeddings = await embedder.embed([query])
-            embedding = embeddings[0]
-        except Exception as e:
-            logger.warning(f"Embedding unavailable, falling back to keyword search: {e}")
+    if rerank and not reranker_available:
+        logger.info("rerank=True but no reranker configured, using hybrid search")
 
-        if embedding is not None:
-            candidates = await store.search(
-                embedding,
-                source_name=source,
-                source_version=version,
-                chunk_types=None,
-                parent_name=parent,
-                limit=n_candidates,
-            )
-
-            if candidates:
-                doc_texts = [c.get("content", "") for c in candidates]
-                reranker = LlamaReranker(
-                    cfg.reranker.url,
-                    cfg.reranker.model,
-                    cfg.reranker.batch_size,
-                    cfg.reranker.timeout,
-                )
-                try:
-                    scores = await reranker.rerank(query, doc_texts)
-                    if len(scores) == len(candidates):
-                        for i, c in enumerate(candidates):
-                            c["rerank_score"] = scores[i]
-                        candidates.sort(key=lambda c: c["rerank_score"], reverse=True)
-                    else:
-                        logger.warning("Reranker returned wrong number of scores, using embedding order")
-                except Exception as e:
-                    logger.warning(f"Reranking failed, falling back to embedding-only order: {e}")
-                    candidates.sort(key=lambda c: c.get("similarity", 0.0), reverse=True)
-
-                results = candidates[:limit]
-            else:
-                results = []
-        else:
-            # No embedding, fall back to hybrid
-            results = await store.hybrid_search(
-                query, None,
-                source_name=source,
-                source_version=version,
-                chunk_types=chunk_types,
-                parent_name=parent,
-                limit=limit,
-            )
-    else:
-        # Standard hybrid search
-        embedding = None
-        try:
-            embedder = LlamaEmbedder(
-                cfg.embedder.url,
-                cfg.embedder.model,
-                cfg.embedder.dimensions,
-                cfg.embedder.batch_size,
-            )
-            embeddings = await embedder.embed([query])
-            embedding = embeddings[0]
-        except Exception as e:
-            logger.debug(f"Embedding unavailable, falling back to keyword search: {e}")
-
-        results = await store.hybrid_search(
-            query,
-            embedding,
-            source_name=source,
-            source_version=version,
-            chunk_types=chunk_types,
-            parent_name=parent,
-            limit=limit,
+    # Build reranker instance when needed
+    reranker = None
+    if reranker_available:
+        reranker = LlamaReranker(
+            cfg.reranker.url,
+            cfg.reranker.model,
+            cfg.reranker.batch_size,
+            cfg.reranker.timeout,
         )
+
+    embedder = LlamaEmbedder(
+        cfg.embedder.url,
+        cfg.embedder.model,
+        cfg.embedder.dimensions,
+        cfg.embedder.batch_size,
+    )
+
+    results = await run_search(
+        store,
+        embedder,
+        reranker,
+        query,
+        source_name=source,
+        source_version=version,
+        chunk_types=chunk_types,
+        parent_name=parent,
+        limit=limit,
+        rerank=use_rerank,
+        n_candidates=n_candidates,
+    )
 
     await store.close()
 

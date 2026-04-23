@@ -9,9 +9,8 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 from glyph.config import load_config, load_global_config, resolve_config_for_repo
-from glyph.domain.models import ChunkType
 from glyph.embedders.llama import LlamaEmbedder
-from glyph.pipeline import run_export, run_ingest
+from glyph.pipeline import run_export, run_ingest, run_search
 from glyph.rerankers import LlamaReranker
 from glyph.store import PostgresStore
 
@@ -83,28 +82,33 @@ class GlyphServer:
                 rerank: Re-rank results using a cross-encoder reranker (default True,
                         ignored if no reranker is configured)
                 candidates: Number of candidate chunks to fetch from pgvector before
-                            reranking (default 50, only used when rerank=True)
+                            reranking (default 50, only used when rerank=True;
+                            must be >= limit)
             """
             if not self._store or not self._embedder:
                 return "Error: Server not initialized"
 
             limit = max(1, min(limit, 50))
-            candidates = max(limit, candidates)
+            if candidates < limit:
+                candidates = limit
 
             # Determine retrieval strategy
-            use_reranker = (
-                self._reranker is not None
-                and rerank
-            )
+            if rerank and self._reranker is None:
+                logger.info("rerank=True but no reranker configured, using hybrid search")
 
-            if use_reranker:
-                results = await self._search_with_rerank(
-                    query, candidates, source, version, chunk_types, parent, limit,
-                )
-            else:
-                results = await self._search_hybrid(
-                    query, source, version, chunk_types, parent, limit,
-                )
+            results = await run_search(
+                self._store,
+                self._embedder,
+                self._reranker,
+                query,
+                source_name=source,
+                source_version=version,
+                chunk_types=chunk_types,
+                parent_name=parent,
+                limit=limit,
+                rerank=rerank,
+                n_candidates=candidates,
+            )
 
             if not results:
                 filters = _describe_filters(source=source, version=version, parent=parent, chunk_types=chunk_types)
@@ -302,99 +306,6 @@ class GlyphServer:
             except Exception as e:
                 logger.exception("Reindex failed")
                 return f"Error during reindex: {e}"
-
-    # --- Retrieval helpers ---
-
-    async def _search_hybrid(
-        self,
-        query: str,
-        source_name: str | None,
-        source_version: str | None,
-        chunk_types: list[str] | None,
-        parent_name: str | None,
-        limit: int,
-    ) -> list[dict]:
-        """Hybrid search: FTS + vector via RRF fusion."""
-        embedding = None
-        try:
-            embeddings = await self._embedder.embed([query])
-            embedding = embeddings[0]
-        except Exception as e:
-            logger.warning(f"Embedding unavailable, falling back to keyword search: {e}")
-
-        return await self._store.hybrid_search(
-            query,
-            embedding,
-            source_name=source_name,
-            source_version=source_version,
-            chunk_types=chunk_types,
-            parent_name=parent_name,
-            limit=limit,
-        )
-
-    async def _search_with_rerank(
-        self,
-        query: str,
-        n_candidates: int,
-        source_name: str | None,
-        source_version: str | None,
-        chunk_types: list[str] | None,
-        parent_name: str | None,
-        limit: int,
-    ) -> list[dict]:
-        """Two-stage retrieval: embed → pgvector → rerank."""
-        # Stage 1: embed query and fetch top candidates from pgvector
-        embedding = None
-        try:
-            embeddings = await self._embedder.embed([query])
-            embedding = embeddings[0]
-        except Exception as e:
-            logger.warning(f"Embedding unavailable, falling back to keyword search: {e}")
-            if embedding is None:
-                # No embedding at all, fall back to hybrid search
-                return await self._search_hybrid(
-                    query, source_name, source_version,
-                    chunk_types, parent_name, limit,
-                )
-
-        chunk_type_enums = (
-            [ChunkType(ct) for ct in chunk_types] if chunk_types else None
-        )
-        # Use the store's search method which returns content
-        candidates = await self._store.search(
-            embedding,
-            source_name=source_name,
-            source_version=source_version,
-            chunk_types=None,
-            parent_name=parent_name,
-            limit=n_candidates,
-        )
-
-        if not candidates:
-            return []
-
-        if len(candidates) == 1:
-            # Single candidate — no need to rerank
-            candidates[0]["rerank_score"] = candidates[0].get("similarity", 1.0)
-            return candidates
-
-        # Stage 2: rerank candidates
-        doc_texts = [c.get("content", "") for c in candidates]
-        try:
-            scores = await self._reranker.rerank(query, doc_texts)
-            if len(scores) == len(candidates):
-                for i, c in enumerate(candidates):
-                    c["rerank_score"] = scores[i]
-                candidates.sort(key=lambda c: c["rerank_score"], reverse=True)
-                return candidates[:limit]
-        except Exception as e:
-            logger.warning(
-                f"Reranking failed, falling back to embedding-only order: {e}",
-            )
-
-        # Fallback: sort by embedding similarity
-        candidates.sort(key=lambda c: c.get("similarity", 0.0), reverse=True)
-        return candidates[:limit]
 
     def _register_resources(self) -> None:
         @self.mcp.resource("glyph://sources")
