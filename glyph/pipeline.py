@@ -335,7 +335,7 @@ async def _search_hybrid(
         embeddings = await embedder.embed([query])
         embedding = embeddings[0]
     except Exception as e:
-        logger.debug(f"Embedding unavailable, falling back to keyword search: {e}")
+        logger.warning(f"Embedding unavailable, falling back to keyword search: {e}")
 
     return await store.hybrid_search(
         query,

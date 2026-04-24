@@ -32,8 +32,13 @@ class LlamaReranker:
             # batch_scores is sorted by the API (by score desc)
             # Map back to input order
             for item in batch_scores:
-                original_idx = i + item["index"]
-                scores[original_idx] = item["relevance_score"]
+                idx = item.get("index")
+                score = item.get("relevance_score")
+                if idx is None or score is None:
+                    logger.warning("Skipping malformed rerank result (missing key): %s", item)
+                    continue
+                original_idx = i + idx
+                scores[original_idx] = score
 
         return scores
 

@@ -42,36 +42,61 @@ class HTMLIngestor:
     async def ingest(self) -> list[Document]:
         visited: set[str] = set()
         documents: list[Document] = []
-        queue = [self._base_url]
+        queue: list[str] = [self._base_url]
+        semaphore = asyncio.Semaphore(self._max_concurrent)
 
         connector = aiohttp.TCPConnector(limit=self._max_concurrent)
         timeout = aiohttp.ClientTimeout(total=30)
 
-        async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
-            while queue and len(documents) < self._max_pages:
-                url = queue.pop(0)
-                normalized = self._normalize_url(url)
-
-                if normalized in visited:
-                    continue
-                visited.add(normalized)
-
-                is_seed = normalized == self._normalize_url(self._base_url)
-                if not is_seed and not self._should_include(normalized):
-                    continue
-
-                logger.info(f"Fetching: {normalized} ({len(documents)}/{self._max_pages})")
-
-                doc, links = await self._fetch_page(session, normalized)
-                if doc:
-                    documents.append(doc)
-
-                for link in links:
-                    link_norm = self._normalize_url(link)
-                    if link_norm not in visited and self._is_same_domain(link_norm):
-                        queue.append(link_norm)
-
+        async def _guarded_fetch(
+            session: aiohttp.ClientSession, url: str
+        ) -> tuple[str, Document | None, list[str]]:
+            """Fetch a single page under the semaphore with politeness delay."""
+            async with semaphore:
+                logger.info(f"Fetching: {url} ({len(documents)}/{self._max_pages})")
+                doc, links = await self._fetch_page(session, url)
                 await asyncio.sleep(self._delay)
+                return url, doc, links
+
+        async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+            seed_norm = self._normalize_url(self._base_url)
+
+            while queue and len(documents) < self._max_pages:
+                # Drain the current queue into a batch, deduplicating against visited
+                batch: list[str] = []
+                while queue and len(documents) + len(batch) < self._max_pages:
+                    url = queue.pop(0)
+                    normalized = self._normalize_url(url)
+
+                    if normalized in visited:
+                        continue
+                    visited.add(normalized)
+
+                    is_seed = normalized == seed_norm
+                    if not is_seed and not self._should_include(normalized):
+                        continue
+
+                    batch.append(normalized)
+
+                if not batch:
+                    break
+
+                # Dispatch all URLs in this batch concurrently (semaphore limits in-flight)
+                tasks = [
+                    asyncio.create_task(_guarded_fetch(session, url))
+                    for url in batch
+                ]
+                results = await asyncio.gather(*tasks)
+
+                # Process results: collect documents and enqueue discovered links
+                for _url, doc, links in results:
+                    if doc and len(documents) < self._max_pages:
+                        documents.append(doc)
+
+                    for link in links:
+                        link_norm = self._normalize_url(link)
+                        if link_norm not in visited and self._is_same_domain(link_norm):
+                            queue.append(link_norm)
 
         logger.info(f"Scraped {len(documents)} pages from {self._base_url}")
         return documents

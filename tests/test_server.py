@@ -406,6 +406,24 @@ class TestSearchRerankTool:
         mock_store.hybrid_search.assert_called_once()
         mock_store.search.assert_not_called()
 
+    async def test_no_reranker_surfaces_fallback_note_in_response(
+        self, mock_store, mock_embedder
+    ):
+        """When rerank=True but no reranker configured, the response text should
+        include a note informing the MCP client about the fallback."""
+        mock_store.hybrid_search = AsyncMock(return_value=[
+            _make_chunk(score=0.045, retrieval="hybrid"),
+        ])
+        srv = _build_test_server(mock_store, mock_embedder, mock_reranker=None)
+
+        result = await srv.mcp._tool_manager.call_tool("search", {
+            "query": "test", "rerank": True, "limit": 5,
+        })
+
+        assert "no reranker configured" in result.lower(), (
+            f"Expected a note about missing reranker in response, got: {result[:200]}"
+        )
+
     async def test_rerank_failure_falls_back(self, mock_store, mock_embedder, mock_reranker):
         mock_store.search = AsyncMock(return_value=[
             _make_chunk(qualified_name="Node2D.get_position", heading="get_position",

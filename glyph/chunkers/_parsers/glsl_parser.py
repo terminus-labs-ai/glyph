@@ -35,11 +35,14 @@ _UNIFORM_BLOCK_RE = re.compile(
     re.MULTILINE,
 )
 
-# [layout(...)] uniform Type name [: godot_hint] [= default];
-# The key distinction from uniform blocks: has TWO identifiers after 'uniform' (type + name)
+# [layout(...)] uniform [precision] Type name [array] [: godot_hint] [= default];
 _STANDALONE_UNIFORM_RE = re.compile(
-    r"^(?:layout\s*\(([^)]*)\)\s+)?uniform\s+(\w+)\s+(\w+)"
-    r"(?:\s*:\s*([\w]+(?:\([^)]*\))?))?(?:\s*=\s*([^;]+))?\s*;",
+    r"^(?:layout\s*\(([^)]*)\)\s+)?uniform\s+"
+    r"(?:(lowp|mediump|highp)\s+)?"
+    r"(\w+)\s+(\w+)"
+    r"(?:\s*\[([^\]]*)\])?"
+    r"(?:\s*:\s*(\w+(?:\([^)]*\))?))?"
+    r"(?:\s*=\s*([^;]+))?\s*;",
     re.MULTILINE,
 )
 
@@ -58,14 +61,76 @@ _FUNCTION_RE = re.compile(
     re.MULTILINE,
 )
 
-# layout(local_size_x = X, ...) in;
+# layout(local_size_x = X [, local_size_y = Y] [, local_size_z = Z]) in;
 _LOCAL_SIZE_RE = re.compile(
-    r"layout\s*\([^)]*local_size_x\s*=\s*(\d+)[^)]*\)\s*in\s*;",
+    r"layout\s*\([^)]*?"
+    r"local_size_x\s*=\s*(\d+)"
+    r"(?:[^)]*?local_size_y\s*=\s*(\d+))?"
+    r"(?:[^)]*?local_size_z\s*=\s*(\d+))?"
+    r"[^)]*\)\s*in\s*;",
+    re.MULTILINE | re.DOTALL,
+)
+
+# struct/uniform block member: [precision] Type name [array];
+# TODO: does not handle multiple declarators (float a, b, c;)
+_MEMBER_RE = re.compile(
+    r"^\s+"
+    r"(?:(?:lowp|mediump|highp)\s+)?"
+    r"(\w[\w<>]*(?:\s*<[^>]*>)?)\s+"
+    r"(\w+)"
+    r"(?:\s*\[([^\]]*)\])?"
+    r"\s*;",
     re.MULTILINE,
 )
 
-# struct/uniform block member: Type name;
-_MEMBER_RE = re.compile(r"^\s+(\w[\w<>]*(?:\s*<[^>]*>)?)\s+(\w+)\s*;", re.MULTILINE)
+
+def _find_top_level_brace_ranges(source: str) -> list[tuple[int, int]]:
+    """Return (open_brace_pos, close_brace_pos) for all depth-0 brace blocks."""
+    # TODO: does not handle #define macros whose body contains literal { or }.
+    # Multi-line #define FOO(x) \ ... { ... } will corrupt depth tracking.
+    # Rare in GLSL, occasional in UE USF. If this causes false positives
+    # during ingestion, add #-directive skipping with line-continuation support.
+    ranges = []
+    depth = 0
+    open_pos = -1
+    i = 0
+    in_line_comment = False
+    in_block_comment = False
+    in_string = False
+    while i < len(source):
+        ch = source[i]
+        nxt = source[i + 1] if i + 1 < len(source) else ""
+        if in_line_comment:
+            if ch == "\n":
+                in_line_comment = False
+        elif in_block_comment:
+            if ch == "*" and nxt == "/":
+                in_block_comment = False
+                i += 1
+        elif in_string:
+            if ch == "\\" and nxt:
+                i += 1
+            elif ch == '"':
+                in_string = False
+        elif ch == "/" and nxt == "/":
+            in_line_comment = True
+            i += 1
+        elif ch == "/" and nxt == "*":
+            in_block_comment = True
+            i += 1
+        elif ch == '"':
+            in_string = True
+        elif ch == "{":
+            if depth == 0:
+                open_pos = i
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0 and open_pos >= 0:
+                ranges.append((open_pos, i))
+                open_pos = -1
+        i += 1
+    return ranges
 
 
 def _extract_brace_block(source: str, open_pos: int) -> tuple[str, int]:
@@ -102,18 +167,25 @@ class GLSLParser:
         file_metadata: dict[str, Any] = {}
         try:
             self._extract_file_metadata(source, file_metadata)
-            is_compute = bool(_LOCAL_SIZE_RE.search(source))
-            occupied: list[tuple[int, int]] = []
-            self._parse_structs(source, symbols, occupied)
-            self._parse_uniform_blocks(source, symbols, occupied)
-            self._parse_standalone_uniforms(source, symbols, occupied)
-            self._parse_in_out(source, symbols, occupied)
-            self._parse_functions(source, symbols, occupied, include_bodies, is_compute)
+            local_size: tuple[int, int, int] | None = None
+            ls_m = _LOCAL_SIZE_RE.search(source)
+            if ls_m:
+                x = int(ls_m.group(1))
+                y = int(ls_m.group(2)) if ls_m.group(2) else 1
+                z = int(ls_m.group(3)) if ls_m.group(3) else 1
+                local_size = (x, y, z)
+            top_level_ranges = _find_top_level_brace_ranges(source)
+            self._parse_structs(source, symbols, top_level_ranges)
+            self._parse_uniform_blocks(source, symbols, top_level_ranges)
+            self._parse_standalone_uniforms(source, symbols, top_level_ranges)
+            self._parse_in_out(source, symbols, top_level_ranges)
+            self._parse_functions(source, symbols, top_level_ranges, include_bodies, local_size)
         except Exception as e:
             logger.warning(f"GLSL parse error (partial results returned): {e}")
-        # Attach file-level metadata to first symbol
-        if symbols and file_metadata:
-            symbols[0].metadata.update(file_metadata)
+        # file-level context attached to every symbol for stable filterability
+        if file_metadata:
+            for sym in symbols:
+                sym.metadata["file"] = dict(file_metadata)
         return symbols
 
     def _extract_file_metadata(self, source: str, meta: dict[str, Any]) -> None:
@@ -146,16 +218,17 @@ class GLSLParser:
         self,
         source: str,
         symbols: list[Symbol],
-        occupied: list[tuple[int, int]],
+        top_level_ranges: list[tuple[int, int]],
     ) -> None:
         lines = source.split("\n")
         for m in _STRUCT_RE.finditer(source):
+            if any(s < m.start() < e for s, e in top_level_ranges):
+                continue
             name = m.group(1)
             brace_pos = source.index("{", m.start())
             body, end_pos = _extract_brace_block(source, brace_pos)
             if end_pos == -1:
                 continue
-            occupied.append((m.start(), end_pos))
             sig = f"struct {name} {{ ... }}"
             doc = self._find_doc_comment(lines, source, m.start())
             symbols.append(Symbol(
@@ -166,24 +239,28 @@ class GLSLParser:
             ))
             for mm in _MEMBER_RE.finditer(body):
                 mtype, mname = mm.group(1), mm.group(2)
+                array_size = mm.group(3)
+                meta: dict[str, Any] = {"type": mtype}
+                if array_size is not None:
+                    meta["array_size"] = array_size.strip()
                 symbols.append(Symbol(
                     name=mname,
                     chunk_type=ChunkType.PROPERTY,
                     content=f"`{mtype} {mname}`",
                     summary=f"{mtype} {mname}",
                     parent=name,
-                    metadata={"type": mtype},
+                    metadata=meta,
                 ))
 
     def _parse_uniform_blocks(
         self,
         source: str,
         symbols: list[Symbol],
-        occupied: list[tuple[int, int]],
+        top_level_ranges: list[tuple[int, int]],
     ) -> None:
         lines = source.split("\n")
         for m in _UNIFORM_BLOCK_RE.finditer(source):
-            if any(s <= m.start() <= e for s, e in occupied):
+            if any(s < m.start() < e for s, e in top_level_ranges):
                 continue
             layout_str = (m.group(1) or "").strip()
             name = m.group(2)
@@ -191,7 +268,6 @@ class GLSLParser:
             body, end_pos = _extract_brace_block(source, brace_pos)
             if end_pos == -1:
                 continue
-            occupied.append((m.start(), end_pos))
             doc = self._find_doc_comment(lines, source, m.start())
             symbols.append(Symbol(
                 name=name,
@@ -202,33 +278,43 @@ class GLSLParser:
             ))
             for mm in _MEMBER_RE.finditer(body):
                 mtype, mname = mm.group(1), mm.group(2)
+                array_size = mm.group(3)
+                meta: dict[str, Any] = {"type": mtype}
+                if array_size is not None:
+                    meta["array_size"] = array_size.strip()
                 symbols.append(Symbol(
                     name=mname,
                     chunk_type=ChunkType.PROPERTY,
                     content=f"`{mtype} {mname}`",
                     summary=f"{mtype} {mname}",
                     parent=name,
-                    metadata={"type": mtype},
+                    metadata=meta,
                 ))
 
     def _parse_standalone_uniforms(
         self,
         source: str,
         symbols: list[Symbol],
-        occupied: list[tuple[int, int]],
+        top_level_ranges: list[tuple[int, int]],
     ) -> None:
         for m in _STANDALONE_UNIFORM_RE.finditer(source):
-            if any(s <= m.start() <= e for s, e in occupied):
+            if any(s < m.start() < e for s, e in top_level_ranges):
                 continue
             layout_str = (m.group(1) or "").strip()
-            utype = m.group(2)
-            uname = m.group(3)
-            godot_hint = m.group(4)
-            default_val = (m.group(5) or "").strip() or None
+            precision = m.group(2)
+            utype = m.group(3)
+            uname = m.group(4)
+            array_size = m.group(5)
+            godot_hint = m.group(6)
+            default_val = (m.group(7) or "").strip() or None
 
             meta: dict[str, Any] = {"type": utype}
+            if precision:
+                meta["precision"] = precision
             if layout_str:
                 meta["layout"] = layout_str
+            if array_size is not None:
+                meta["array_size"] = array_size.strip()
             if godot_hint:
                 meta["godot_hint"] = godot_hint.strip()
             if default_val:
@@ -249,10 +335,10 @@ class GLSLParser:
         self,
         source: str,
         symbols: list[Symbol],
-        occupied: list[tuple[int, int]],
+        top_level_ranges: list[tuple[int, int]],
     ) -> None:
         for m in _IN_OUT_RE.finditer(source):
-            if any(s <= m.start() <= e for s, e in occupied):
+            if any(s < m.start() < e for s, e in top_level_ranges):
                 continue
             layout_str = (m.group(1) or "").strip()
             qualifier = m.group(2)
@@ -273,32 +359,29 @@ class GLSLParser:
         self,
         source: str,
         symbols: list[Symbol],
-        occupied: list[tuple[int, int]],
+        top_level_ranges: list[tuple[int, int]],
         include_bodies: bool,
-        is_compute: bool,
+        local_size: tuple[int, int, int] | None,
     ) -> None:
         lines = source.split("\n")
         for m in _FUNCTION_RE.finditer(source):
-            if any(s <= m.start() <= e for s, e in occupied):
+            if any(s < m.start() < e for s, e in top_level_ranges):
                 continue
             ret = m.group(1)
             name = m.group(2)
             params = m.group(3)
 
-            # Skip control flow keywords that match the pattern
             if ret in ("if", "for", "while", "switch", "else", "do"):
                 continue
 
-            is_entry = name in _GODOT_ENTRY_POINTS or (is_compute and name == "main")
+            is_entry = name in _GODOT_ENTRY_POINTS or (local_size is not None and name == "main")
             chunk_type = ChunkType.SHADER_ENTRY_POINT if is_entry else ChunkType.METHOD
 
             sig = f"{ret} {name}({params})"
             doc = self._find_doc_comment(lines, source, m.start())
 
             brace_pos = source.index("{", m.start())
-            body_content, end_pos = _extract_brace_block(source, brace_pos)
-            if end_pos != -1:
-                occupied.append((m.start(), end_pos))
+            _, end_pos = _extract_brace_block(source, brace_pos)
 
             if include_bodies:
                 full_src = source[m.start():end_pos] if end_pos != -1 else sig
@@ -308,10 +391,15 @@ class GLSLParser:
                 if doc:
                     content += f"\n\n{doc}"
 
+            meta: dict[str, Any] = {"return_type": ret}
+            if local_size is not None and name == "main":
+                meta["local_size"] = list(local_size)
+                meta["is_compute"] = True
+
             symbols.append(Symbol(
                 name=name,
                 chunk_type=chunk_type,
                 content=content,
                 summary=_first_line(doc) or sig,
-                metadata={"return_type": ret},
+                metadata=meta,
             ))

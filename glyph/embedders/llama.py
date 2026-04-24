@@ -33,16 +33,18 @@ class LlamaEmbedder:
         return embeddings
 
     async def _embed_batch(self, texts: list[str]) -> list[list[float]]:
-        # Try common embedding API endpoints
-        endpoints = [
+        # Endpoints that support batching natively (OpenAI, llama.cpp)
+        batch_endpoints = [
             (f"{self._url}/v1/embeddings", self._payload_openai),
-            (f"{self._url}/api/embeddings", self._payload_ollama),
             (f"{self._url}/embedding", self._payload_llama_cpp),
         ]
+        # Ollama only supports single prompts — must loop per text
+        ollama_endpoint = f"{self._url}/api/embeddings"
 
         timeout = aiohttp.ClientTimeout(total=60)
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            for endpoint, payload_fn in endpoints:
+            # Try batch-capable endpoints first
+            for endpoint, payload_fn in batch_endpoints:
                 try:
                     payload = payload_fn(texts)
                     async with session.post(endpoint, json=payload) as resp:
@@ -55,6 +57,24 @@ class LlamaEmbedder:
                 except Exception as e:
                     logger.debug(f"Endpoint {endpoint} failed: {e}")
                     continue
+
+            # Ollama: send one request per text
+            try:
+                embeddings: list[list[float]] = []
+                for text in texts:
+                    payload = self._payload_ollama([text])
+                    async with session.post(ollama_endpoint, json=payload) as resp:
+                        if resp.status != 200:
+                            break
+                        data = await resp.json()
+                        result = self._extract_embeddings(data, 1)
+                        if not result:
+                            break
+                        embeddings.append(result[0])
+                if len(embeddings) == len(texts):
+                    return embeddings
+            except Exception as e:
+                logger.debug(f"Endpoint {ollama_endpoint} failed: {e}")
 
         msg = f"All embedding endpoints failed for {len(texts)} texts — embeddings are zero vectors, search quality will be degraded"
         logger.warning(msg)

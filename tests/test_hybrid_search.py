@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from unittest.mock import AsyncMock, patch
 
@@ -386,7 +387,44 @@ class TestSearchToolHybrid:
         assert "No results found" in result
 
 
-# --- Group 6: Retrieval tags in formatting ---
+# --- Group 6: Pipeline _search_hybrid log level ---
+
+
+class TestSearchHybridLogLevel:
+    """Verify embedding failure in _search_hybrid logs at WARNING, not DEBUG."""
+
+    async def test_embedding_failure_logs_warning(self, caplog):
+        from glyph.pipeline import _search_hybrid
+
+        mock_store = AsyncMock()
+        mock_store.hybrid_search = AsyncMock(return_value=[])
+
+        mock_embedder = AsyncMock()
+        mock_embedder.embed = AsyncMock(side_effect=RuntimeError("connection refused"))
+
+        with caplog.at_level(logging.WARNING, logger="glyph.pipeline"):
+            await _search_hybrid(
+                mock_store,
+                mock_embedder,
+                "test query",
+                source_name=None,
+                source_version=None,
+                chunk_types=None,
+                parent_name=None,
+                limit=10,
+            )
+
+        # Should have a WARNING-level record about embedding failure
+        warning_messages = [
+            r.message for r in caplog.records
+            if r.levelno == logging.WARNING and "glyph.pipeline" in r.name
+        ]
+        assert any("falling back" in msg.lower() or "embedding" in msg.lower() for msg in warning_messages), (
+            f"Expected a WARNING log about embedding fallback, got: {warning_messages}"
+        )
+
+
+# --- Group 7: Retrieval tags in formatting ---
 
 class TestRetrievalTags:
     def test_hybrid_tag(self):

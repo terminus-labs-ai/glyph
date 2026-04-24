@@ -237,6 +237,85 @@ class TestLlamaReranker:
                 await reranker.rerank("query", ["doc1", "doc2"])
 
 
+class TestLlamaRerankerMalformedResults:
+    """Tests for defensive parsing of malformed API responses."""
+
+    async def test_missing_index_key_skips_gracefully(self):
+        """Result items missing 'index' should be skipped, not crash."""
+        reranker = LlamaReranker(
+            url="http://localhost:11434",
+            model="qwen3-reranker",
+        )
+
+        malformed_response = {
+            "results": [
+                {"relevance_score": 0.95},  # missing "index"
+                {"relevance_score": 0.70},  # missing "index"
+            ]
+        }
+
+        with patch(
+            "glyph.rerankers.llama.aiohttp.ClientSession",
+            _AsyncSession(json_data=malformed_response),
+        ):
+            # Should NOT raise KeyError
+            scores = await reranker.rerank("test query", ["doc A", "doc B"])
+
+        # All scores should remain at default 0.0 since items were skipped
+        assert scores == [0.0, 0.0]
+
+    async def test_missing_relevance_score_key_skips_gracefully(self):
+        """Result items missing 'relevance_score' should be skipped, not crash."""
+        reranker = LlamaReranker(
+            url="http://localhost:11434",
+            model="qwen3-reranker",
+        )
+
+        malformed_response = {
+            "results": [
+                {"index": 0},  # missing "relevance_score"
+                {"index": 1},  # missing "relevance_score"
+            ]
+        }
+
+        with patch(
+            "glyph.rerankers.llama.aiohttp.ClientSession",
+            _AsyncSession(json_data=malformed_response),
+        ):
+            # Should NOT raise KeyError
+            scores = await reranker.rerank("test query", ["doc A", "doc B"])
+
+        # Skipped items should leave default 0.0
+        assert scores == [0.0, 0.0]
+
+    async def test_partial_malformed_results_preserves_valid(self):
+        """Mix of valid and malformed items: valid ones get scores, malformed are skipped."""
+        reranker = LlamaReranker(
+            url="http://localhost:11434",
+            model="qwen3-reranker",
+        )
+
+        mixed_response = {
+            "results": [
+                {"index": 0, "relevance_score": 0.95},  # valid
+                {"relevance_score": 0.80},               # missing "index" — skip
+                {"index": 2, "relevance_score": 0.60},  # valid
+                {"index": 1},                             # missing "relevance_score" — skip
+            ]
+        }
+
+        with patch(
+            "glyph.rerankers.llama.aiohttp.ClientSession",
+            _AsyncSession(json_data=mixed_response),
+        ):
+            scores = await reranker.rerank("test query", ["doc A", "doc B", "doc C"])
+
+        # doc A (index 0) = 0.95, doc B (index 1) = 0.0 (skipped), doc C (index 2) = 0.60
+        assert scores[0] == 0.95
+        assert scores[1] == 0.0
+        assert scores[2] == 0.60
+
+
 class TestLlamaRerankerIntegration:
     """Integration tests that hit a live reranker service. Skipped unless
     --reranker-url is passed."""

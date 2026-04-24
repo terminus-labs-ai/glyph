@@ -161,8 +161,9 @@ Tutorials: `tutorials/_index.md` (tier 2) + `tutorials/name.md` (tier 3).
 - **Implementation:** `server.py` uses FastMCP with lifespan for store/embedder init. Formatting helpers produce markdown output matching the tiered export style.
 - **Hybrid search:** `hybrid_search()` combines `text_search()` (FTS via `websearch_to_tsquery`) and `search()` (pgvector) using Reciprocal Rank Fusion (RRF, k=60). Gracefully degrades to keyword-only when embeddings unavailable. Results tagged `[hybrid]`, `[keyword]`, or `[semantic]`.
 - **Store methods for MCP:** `get_by_qualified_name()`, `get_by_parent()`, `get_sources_with_counts()`, `text_search()`, `hybrid_search()`, `upgrade_schema()`.
-- **Pipeline module** (`pipeline.py`): `run_ingest()`, `run_export()` — decoupled from CLI, used by both CLI and MCP tools.
-- **Tests:** `tests/test_server.py` — mocked store, covers all 4 tools + formatters. `tests/test_hybrid_search.py` — 21 tests for FTS, RRF, hybrid search, upgrade_schema, MCP integration, retrieval tags.
+- **Reranking:** optional two-stage retrieval. `search` tool accepts `rerank` and `candidates` params. When enabled: vector search → reranker scoring → top K. Falls back gracefully if no reranker configured (with note in response) or reranker fails.
+- **Pipeline module** (`pipeline.py`): `run_ingest()`, `run_export()`, `run_search()` — decoupled from CLI, used by both CLI and MCP tools.
+- **Tests:** 159 tests across 7 files. `test_server.py` (27), `test_hybrid_search.py` (22), `test_config.py` (23), `test_parsers.py` (63), `test_llama_reranker.py` (11), `test_html_ingestor.py` (8), `test_embedder.py` (5).
 
 ## Dependencies
 

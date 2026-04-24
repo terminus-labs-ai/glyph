@@ -27,7 +27,7 @@ _PARAM_STRUCT_END_RE = re.compile(r"END_SHADER_PARAMETER_STRUCT\(\)", re.MULTILI
 _PARAM_MACRO_RE = re.compile(
     r"\b(SHADER_PARAMETER(?:_ARRAY|_STRUCT_REF|_TEXTURE|_SAMPLER"
     r"|_RDG_TEXTURE|_RDG_BUFFER_SRV)?)"
-    r"\(\s*([\w<>]+)\s*,\s*(\w+)(?:\s*,\s*\[(\d+)\])?\s*\)",
+    r"\(\s*([\w<>]+)\s*,\s*(\w+)(?:\s*,\s*\[(\w+)\])?\s*\)",
     re.MULTILINE,
 )
 
@@ -69,7 +69,10 @@ class USFParser:
             # Find matching END after the BEGIN
             end_m = _PARAM_STRUCT_END_RE.search(source, begin_m.end())
             if not end_m:
-                # Unterminated block — emit partial symbol, skip blanking
+                logger.warning(
+                    f"Unterminated BEGIN_SHADER_PARAMETER_STRUCT for {struct_name} — "
+                    f"emitting partial symbol, no parameters extracted"
+                )
                 symbols.append(Symbol(
                     name=struct_name,
                     chunk_type=ChunkType.SHADER_UNIFORM_BLOCK,
@@ -104,7 +107,11 @@ class USFParser:
                     "type": param_type,
                 }
                 if array_count:
-                    meta["array_count"] = int(array_count)
+                    meta["array_count"] = array_count
+                    try:
+                        meta["array_count_int"] = int(array_count)
+                    except ValueError:
+                        pass
 
                 symbols.append(Symbol(
                     name=param_name,

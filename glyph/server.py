@@ -93,8 +93,10 @@ class GlyphServer:
                 candidates = limit
 
             # Determine retrieval strategy
+            reranker_fallback = False
             if rerank and self._reranker is None:
                 logger.info("rerank=True but no reranker configured, using hybrid search")
+                reranker_fallback = True
 
             results = await run_search(
                 self._store,
@@ -114,7 +116,10 @@ class GlyphServer:
                 filters = _describe_filters(source=source, version=version, parent=parent, chunk_types=chunk_types)
                 return f"No results found for \"{query}\"{filters}"
 
-            return _format_search_results(results)
+            response = _format_search_results(results)
+            if reranker_fallback:
+                response = "Note: rerank was requested but no reranker configured; falling back to hybrid search.\n\n" + response
+            return response
 
         @self.mcp.tool()
         async def lookup(qualified_name: str) -> str:

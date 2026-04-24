@@ -682,10 +682,10 @@ class TestGodotGLSLParser:
         assert sym.metadata.get("default") == "1.0"
 
     def test_shader_type_metadata(self, symbols):
-        assert symbols[0].metadata.get("shader_type") == "canvas_item"
+        assert symbols[0].metadata.get("file", {}).get("shader_type") == "canvas_item"
 
     def test_render_mode_metadata(self, symbols):
-        assert "blend_mix" in str(symbols[0].metadata.get("render_mode", ""))
+        assert "blend_mix" in str(symbols[0].metadata.get("file", {}).get("render_mode", ""))
 
     def test_godot_unterminated_no_crash(self):
         parser = get_parser("glsl")
