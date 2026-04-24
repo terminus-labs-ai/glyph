@@ -427,3 +427,89 @@ class TestGDScriptParser:
     def test_include_bodies(self, symbols_with_bodies):
         fn = _find(symbols_with_bodies, "move", parent="PlayerController")
         assert "move_and_slide" in fn.content
+
+
+# ── HLSL ───────────────────────────────────────────────────────────────
+
+
+class TestHLSLParser:
+    @pytest.fixture()
+    def symbols(self):
+        return _parse_fixture("hlsl", "sample.hlsl")
+
+    @pytest.fixture()
+    def symbols_with_bodies(self):
+        return _parse_fixture("hlsl", "sample.hlsl", include_bodies=True)
+
+    def test_define_constant(self, symbols):
+        sym = _find(symbols, "GI_INTENSITY")
+        assert sym.chunk_type == ChunkType.CONSTANT
+        assert sym.metadata.get("value") == "1.5"
+        assert "Global illumination" in sym.summary
+
+    def test_cbuffer(self, symbols):
+        sym = _find(symbols, "FrameConstants")
+        assert sym.chunk_type == ChunkType.SHADER_UNIFORM_BLOCK
+        assert sym.metadata.get("register") == "b0"
+
+    def test_cbuffer_members(self, symbols):
+        vp = _find(symbols, "ViewProjection", parent="FrameConstants")
+        assert vp.chunk_type == ChunkType.PROPERTY
+        cam = _find(symbols, "CameraPosition", parent="FrameConstants")
+        assert cam.chunk_type == ChunkType.PROPERTY
+
+    def test_texture_resource(self, symbols):
+        sym = _find(symbols, "AlbedoTex")
+        assert sym.chunk_type == ChunkType.SHADER_RESOURCE
+        assert "Texture2D" in sym.metadata.get("type", "")
+        assert sym.metadata.get("register") == "t0"
+
+    def test_struct(self, symbols):
+        sym = _find(symbols, "VSOutput")
+        assert sym.chunk_type == ChunkType.CLASS_OVERVIEW
+        assert "Vertex shader output" in sym.content or "Vertex shader output" in sym.summary
+
+    def test_struct_members(self, symbols):
+        pos = _find(symbols, "Position", parent="VSOutput")
+        assert pos.chunk_type == ChunkType.PROPERTY
+        assert pos.metadata.get("semantic") == "SV_POSITION"
+        tc = _find(symbols, "TexCoord", parent="VSOutput")
+        assert tc.chunk_type == ChunkType.PROPERTY
+        assert tc.metadata.get("semantic") == "TEXCOORD0"
+        nrm = _find(symbols, "Normal", parent="VSOutput")
+        assert nrm.chunk_type == ChunkType.PROPERTY
+        assert nrm.metadata.get("semantic") == "NORMAL"
+
+    def test_regular_function(self, symbols):
+        sym = _find(symbols, "TransformPosition")
+        assert sym.chunk_type == ChunkType.METHOD
+        assert sym.metadata.get("return_type") == "float4"
+
+    def test_pixel_shader_entry_point(self, symbols):
+        sym = _find(symbols, "PSMain")
+        assert sym.chunk_type == ChunkType.SHADER_ENTRY_POINT
+        assert sym.metadata.get("semantic") == "SV_Target"
+
+    def test_compute_entry_point(self, symbols):
+        sym = _find(symbols, "CSMain")
+        assert sym.chunk_type == ChunkType.SHADER_ENTRY_POINT
+        assert sym.metadata.get("numthreads") == (8, 8, 1)
+
+    def test_doc_comments(self, symbols):
+        assert "Pixel shader entry point" in _find(symbols, "PSMain").summary
+        assert "Global illumination" in _find(symbols, "GI_INTENSITY").summary
+
+    def test_no_bodies_shows_signature(self, symbols):
+        sym = _find(symbols, "PSMain")
+        assert "```hlsl" in sym.content
+        assert "PSMain" in sym.content
+        assert "AlbedoTex.Sample" not in sym.content
+
+    def test_include_bodies(self, symbols_with_bodies):
+        sym = _find(symbols_with_bodies, "PSMain")
+        assert "AlbedoTex.Sample" in sym.content
+
+    def test_hlsl_unterminated_block_no_crash(self):
+        parser = get_parser("hlsl")
+        result = parser.parse("cbuffer Broken : register(b0) {\n    float4 val;\n")
+        assert isinstance(result, list)

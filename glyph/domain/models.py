@@ -17,6 +17,9 @@ class ChunkType(str, enum.Enum):
     ANNOTATION = "annotation"
     TUTORIAL_SECTION = "tutorial_section"
     CODE_EXAMPLE = "code_example"
+    SHADER_ENTRY_POINT = "shader_entry_point"
+    SHADER_RESOURCE = "shader_resource"
+    SHADER_UNIFORM_BLOCK = "shader_uniform_block"
 
 
 class DocType(str, enum.Enum):
