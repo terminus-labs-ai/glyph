@@ -218,6 +218,12 @@ Default excluded directories: `__pycache__`, `.git`, `.venv`, `venv`, `node_modu
 | TypeScript/TSX | tree-sitter AST | classes, interfaces, enums, type aliases, methods, arrow functions, JSDoc tags, export/abstract detection |
 | Rust | tree-sitter AST | structs, enums, impl methods, traits, trait impls, const/static, type aliases, `///` doc comments, `#[derive()]`, visibility |
 | Go | tree-sitter AST | structs, interfaces, receiver methods, functions, const/var blocks, type aliases, `//` doc comments, exported detection |
+| C++ / Unreal | tree-sitter AST | classes, structs, enums, methods, UCLASS/UPROPERTY/UFUNCTION macros, `///`/`/** */` doc comments |
+| HLSL | regex | functions, structs, cbuffers, resources, entry points (SV_* semantics, `[numthreads]`), `#define`, `///` doc comments |
+| USF (Unreal shader) | regex | HLSL + UE `SHADER_PARAMETER` macros, `BEGIN/END_SHADER_PARAMETER_STRUCT` |
+| GLSL | regex | functions, structs, uniforms, uniform blocks, in/out qualifiers, entry points, Godot dialect (`shader_type`, `render_mode`, hints) |
+
+**Shader-specific chunk types:** Shader parsers introduce three additional chunk types beyond the standard set: `shader_entry_point` (functions identified as shader entry points via SV_* semantics, `[numthreads]`, or conventional names like `main`/`vertex`/`fragment`), `shader_resource` (texture, sampler, and image declarations), and `shader_uniform_block` (cbuffer blocks, GLSL uniform blocks, and UE parameter structs). Use `--type shader_entry_point` with `glyph search` to filter for entry points only.
 
 **Language-specific configuration examples:**
 
