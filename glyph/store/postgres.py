@@ -4,8 +4,8 @@ import json
 import logging
 import uuid
 from typing import Any
-
 import asyncpg
+from yarl import URL
 
 from glyph.domain.models import Chunk, ChunkType, DocType, Document, Source
 
@@ -83,9 +83,30 @@ class PostgresStore:
         self._pool: asyncpg.Pool | None = None
 
     async def connect(self) -> None:
-        self._pool = await asyncpg.create_pool(self._dsn, min_size=2, max_size=10)
-        logger.info("Connected to PostgreSQL")
+        try:
+            self._pool = await asyncpg.create_pool(self._dsn, min_size=2, max_size=10)
+            logger.info("Connected to PostgreSQL")
+        except asyncpg.InvalidCatalogNameError:
+            logger.warn("Failed to connect to PostgreSQL, attempting to create DB...")
 
+            # 1. Parse DSN to extract target DB name and create a fallback DSN
+            url = URL(self._dsn)
+            target_db = url.path.lstrip('/')
+
+            # Create DSN for 'template1' by replacing the path
+            template_dsn = str(url.with_path('template1'))
+            conn = await asyncpg.connect(template_dsn)
+
+            try:
+                # asyncpg execute() runs outside a transaction by default if not specified
+                await conn.execute(f'CREATE DATABASE "{target_db}"')
+                print(f"Database '{target_db}' created.")
+            finally:
+                await conn.close()
+            
+            self._pool = await asyncpg.create_pool(self._dsn, min_size=2, max_size=10)
+
+            
     async def close(self) -> None:
         if self._pool:
             await self._pool.close()
