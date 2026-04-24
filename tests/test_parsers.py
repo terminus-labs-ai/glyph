@@ -581,3 +581,113 @@ class TestUSFParser:
             "BEGIN_SHADER_PARAMETER_STRUCT(FBroken,\n    SHADER_PARAMETER(float, X)"
         )
         assert isinstance(result, list)
+
+
+# ── GLSL ───────────────────────────────────────────────────────────────
+
+
+class TestGLSLParser:
+    @pytest.fixture()
+    def symbols(self):
+        return _parse_fixture("glsl", "sample.frag")
+
+    @pytest.fixture()
+    def symbols_with_bodies(self):
+        return _parse_fixture("glsl", "sample.frag", include_bodies=True)
+
+    def test_uniform_block(self, symbols):
+        sym = _find(symbols, "CameraBlock")
+        assert sym.chunk_type == ChunkType.SHADER_UNIFORM_BLOCK
+        layout = str(sym.metadata.get("layout", ""))
+        assert "std140" in layout or "binding" in layout
+
+    def test_uniform_block_members(self, symbols):
+        vp = _find(symbols, "viewProjection", parent="CameraBlock")
+        assert vp.chunk_type == ChunkType.PROPERTY
+        cp = _find(symbols, "cameraPos", parent="CameraBlock")
+        assert cp.chunk_type == ChunkType.PROPERTY
+
+    def test_sampler_resource(self, symbols):
+        sym = _find(symbols, "albedoMap")
+        assert sym.chunk_type == ChunkType.SHADER_RESOURCE
+
+    def test_in_qualifier(self, symbols):
+        sym = _find(symbols, "fragTexCoord")
+        assert sym.chunk_type == ChunkType.PROPERTY
+        assert sym.metadata.get("qualifier") == "in"
+
+    def test_out_qualifier(self, symbols):
+        sym = _find(symbols, "outColor")
+        assert sym.chunk_type == ChunkType.PROPERTY
+        assert sym.metadata.get("qualifier") == "out"
+
+    def test_helper_function(self, symbols):
+        sym = _find(symbols, "computeLighting")
+        assert sym.chunk_type == ChunkType.METHOD
+        assert sym.metadata.get("return_type") == "vec3"
+
+    def test_main_entry_point(self, symbols):
+        sym = _find(symbols, "main")
+        assert sym.chunk_type == ChunkType.SHADER_ENTRY_POINT
+
+    def test_doc_comments(self, symbols):
+        sym = _find(symbols, "computeLighting")
+        assert "Helper to compute" in sym.summary
+
+    def test_no_bodies_shows_signature(self, symbols):
+        sym = _find(symbols, "computeLighting")
+        assert "```glsl" in sym.content
+        assert "computeLighting" in sym.content
+
+    def test_include_bodies(self, symbols_with_bodies):
+        sym = _find(symbols_with_bodies, "main")
+        assert "texture(albedoMap" in sym.content
+
+    def test_version_directive_not_a_symbol(self, symbols):
+        names = [s.name for s in symbols]
+        assert "450" not in names
+        assert not any("version" in n.lower() for n in names)
+
+    def test_glsl_unterminated_block_no_crash(self):
+        parser = get_parser("glsl")
+        result = parser.parse("layout(std140) uniform Broken {\n    vec4 val;\n")
+        assert isinstance(result, list)
+
+
+# ── Godot GLSL ─────────────────────────────────────────────────────────
+
+
+class TestGodotGLSLParser:
+    @pytest.fixture()
+    def symbols(self):
+        return _parse_fixture("glsl", "sample.gdshader")
+
+    def test_vertex_entry_point(self, symbols):
+        sym = _find(symbols, "vertex")
+        assert sym.chunk_type == ChunkType.SHADER_ENTRY_POINT
+
+    def test_fragment_entry_point(self, symbols):
+        sym = _find(symbols, "fragment")
+        assert sym.chunk_type == ChunkType.SHADER_ENTRY_POINT
+
+    def test_sampler_with_godot_hint(self, symbols):
+        sym = _find(symbols, "noise_tex")
+        assert sym.chunk_type == ChunkType.SHADER_RESOURCE
+        assert sym.metadata.get("godot_hint") == "hint_albedo"
+
+    def test_uniform_with_hint_range(self, symbols):
+        sym = _find(symbols, "speed")
+        assert sym.chunk_type == ChunkType.PROPERTY
+        assert "hint_range" in str(sym.metadata.get("godot_hint", ""))
+        assert sym.metadata.get("default") == "1.0"
+
+    def test_shader_type_metadata(self, symbols):
+        assert symbols[0].metadata.get("shader_type") == "canvas_item"
+
+    def test_render_mode_metadata(self, symbols):
+        assert "blend_mix" in str(symbols[0].metadata.get("render_mode", ""))
+
+    def test_godot_unterminated_no_crash(self):
+        parser = get_parser("glsl")
+        result = parser.parse("shader_type canvas_item;\nuniform Block {\n    float x;")
+        assert isinstance(result, list)
