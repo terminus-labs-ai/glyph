@@ -129,12 +129,13 @@ async def _ingest_source(
     for ing_cfg in src_cfg.ingestors:
         source_type = ing_cfg.type
         origin = ing_cfg.settings.get("path") or ing_cfg.settings.get("base_url", "")
-
+        print(f"creating source obj for {embedder.dimensions}")
         source_obj = Source(
             name=src_cfg.name,
             version=src_cfg.version,
             source_type=source_type,
             origin=origin,
+            dimensions=embedder.dimensions
         )
         source_id = await store.upsert_source(source_obj)
         source_obj.id = source_id

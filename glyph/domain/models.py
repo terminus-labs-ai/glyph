@@ -35,6 +35,7 @@ class Source:
     version: str
     source_type: str  # "xml", "html", "rst"
     origin: str  # URL or filesystem path
+    dimensions: int
     id: uuid.UUID = field(default_factory=uuid.uuid4)
     config: dict[str, Any] = field(default_factory=dict)
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))

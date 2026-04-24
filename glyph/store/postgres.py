@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS sources (
     source_type TEXT NOT NULL,
     origin TEXT NOT NULL,
     config JSONB DEFAULT '{{}}',
+    dimensions INTEGER DEFAULT 0,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
     UNIQUE (name, version)
@@ -144,8 +145,8 @@ class PostgresStore:
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
-                INSERT INTO sources (id, name, version, source_type, origin, config)
-                VALUES ($1, $2, $3, $4, $5, $6)
+                INSERT INTO sources (id, name, version, source_type, origin, config, dimensions)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
                 ON CONFLICT (name, version) DO UPDATE SET
                     source_type = EXCLUDED.source_type,
                     origin = EXCLUDED.origin,
@@ -154,8 +155,8 @@ class PostgresStore:
                 RETURNING id
                 """,
                 source.id, source.name, source.version,
-                source.source_type, source.origin,
-                json.dumps(source.config),
+                source.source_type, source.origin, 
+                json.dumps(source.config), source.dimensions,
             )
             return row["id"]
 

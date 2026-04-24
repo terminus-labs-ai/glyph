@@ -73,7 +73,7 @@ class EmbedderConfig:
     type: str = "llama"
     url: str = "http://localhost:11434"
     model: str = "nomic-embed-text"
-    dimensions: int = 512
+    dimensions: int = 1024
     batch_size: int = 5
 
 
