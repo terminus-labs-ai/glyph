@@ -513,3 +513,71 @@ class TestHLSLParser:
         parser = get_parser("hlsl")
         result = parser.parse("cbuffer Broken : register(b0) {\n    float4 val;\n")
         assert isinstance(result, list)
+
+
+# ── USF ────────────────────────────────────────────────────────────────
+
+
+class TestUSFParser:
+    @pytest.fixture()
+    def symbols(self):
+        return _parse_fixture("usf", "sample.usf")
+
+    @pytest.fixture()
+    def symbols_with_bodies(self):
+        return _parse_fixture("usf", "sample.usf", include_bodies=True)
+
+    def test_parameter_struct(self, symbols):
+        sym = _find(symbols, "FMyShaderParameters")
+        assert sym.chunk_type == ChunkType.SHADER_UNIFORM_BLOCK
+        assert sym.metadata.get("ue_parameter_struct") is True
+
+    def test_shader_parameter(self, symbols):
+        sym = _find(symbols, "Intensity", parent="FMyShaderParameters")
+        assert sym.chunk_type == ChunkType.PROPERTY
+        assert sym.metadata.get("ue_parameter_kind") == "SHADER_PARAMETER"
+
+    def test_shader_parameter_texture(self, symbols):
+        sym = _find(symbols, "SceneColor", parent="FMyShaderParameters")
+        assert sym.chunk_type == ChunkType.PROPERTY
+        assert sym.metadata.get("ue_parameter_kind") == "SHADER_PARAMETER_TEXTURE"
+
+    def test_entry_point(self, symbols):
+        sym = _find(symbols, "PSMain")
+        assert sym.chunk_type == ChunkType.SHADER_ENTRY_POINT
+        assert sym.metadata.get("semantic") == "SV_Target"
+
+    def test_no_bodies_shows_signature(self, symbols):
+        sym = _find(symbols, "PSMain")
+        assert "```hlsl" in sym.content
+        assert "PSMain" in sym.content
+
+    def test_include_bodies(self, symbols_with_bodies):
+        sym = _find(symbols_with_bodies, "PSMain")
+        assert "UV" in sym.content
+
+    def test_hlsl_define_preserved(self, symbols):
+        sym = _find(symbols, "CUSTOM_BLEND_MODE")
+        assert sym.chunk_type == ChunkType.CONSTANT
+
+    def test_hlsl_cbuffer_preserved(self, symbols):
+        sym = _find(symbols, "MaterialConstants")
+        assert sym.chunk_type == ChunkType.SHADER_UNIFORM_BLOCK
+        assert sym.metadata.get("register") == "b1"
+
+    def test_cbuffer_member(self, symbols):
+        sym = _find(symbols, "Opacity", parent="MaterialConstants")
+        assert sym.chunk_type == ChunkType.PROPERTY
+
+    def test_no_include_chunk(self, symbols):
+        names = [s.name for s in symbols]
+        assert "Common.ush" not in names
+        assert "__includes__" not in names
+        assert not any("include" in s.name.lower() for s in symbols)
+
+    def test_usf_unterminated_block_no_crash(self):
+        parser = get_parser("usf")
+        result = parser.parse(
+            "BEGIN_SHADER_PARAMETER_STRUCT(FBroken,\n    SHADER_PARAMETER(float, X)"
+        )
+        assert isinstance(result, list)

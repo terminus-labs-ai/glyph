@@ -47,4 +47,7 @@ def get_parser(language: str) -> LanguageParser | None:
     elif language == "hlsl":
         from glyph.chunkers._parsers.hlsl_parser import HLSLParser
         return HLSLParser()
+    elif language == "usf":
+        from glyph.chunkers._parsers.usf_parser import USFParser
+        return USFParser()
     return None

@@ -1,0 +1,23 @@
+// Sample Unreal Engine shader file for Glyph parser tests
+#include "/Engine/Private/Common.ush"
+
+// Global illumination scale factor
+#define CUSTOM_BLEND_MODE 1
+
+// Per-frame material constants
+cbuffer MaterialConstants : register(b1)
+{
+    float Opacity;
+};
+
+// UE parameter struct for this shader pass
+BEGIN_SHADER_PARAMETER_STRUCT(FMyShaderParameters, )
+    SHADER_PARAMETER(float, Intensity)
+    SHADER_PARAMETER_TEXTURE(Texture2D, SceneColor)
+END_SHADER_PARAMETER_STRUCT()
+
+/** Pixel shader entry point */
+float4 PSMain(float2 UV : TEXCOORD0) : SV_Target
+{
+    return float4(UV, 0.0, 1.0);
+}
