@@ -30,6 +30,23 @@ LANGUAGE_EXTENSIONS: dict[str, str] = {
     ".cpp": "cpp",
     ".h": "cpp",
     ".hpp": "cpp",
+    ".hlsl": "hlsl",
+    ".hlsli": "hlsl",
+    ".fx": "hlsl",
+    ".fxh": "hlsl",
+    ".usf": "usf",
+    ".ush": "usf",
+    ".glsl": "glsl",
+    ".shader": "glsl",
+    ".gdshader": "glsl",
+    ".vert": "glsl",
+    ".frag": "glsl",
+    ".comp": "glsl",
+    ".geom": "glsl",
+    ".tesc": "glsl",
+    ".tese": "glsl",
+    ".vs": "glsl",
+    ".fs": "glsl",
 }
 
 DEFAULT_EXCLUDE_DIRS = [

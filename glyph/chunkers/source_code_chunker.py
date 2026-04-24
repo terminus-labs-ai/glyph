@@ -20,6 +20,23 @@ EXTENSION_MAP = {
     ".hpp": "cpp",
     ".cpp": "cpp",
     ".cc": "cpp",
+    ".hlsl": "hlsl",
+    ".hlsli": "hlsl",
+    ".fx": "hlsl",
+    ".fxh": "hlsl",
+    ".usf": "usf",
+    ".ush": "usf",
+    ".glsl": "glsl",
+    ".shader": "glsl",
+    ".gdshader": "glsl",
+    ".vert": "glsl",
+    ".frag": "glsl",
+    ".comp": "glsl",
+    ".geom": "glsl",
+    ".tesc": "glsl",
+    ".tese": "glsl",
+    ".vs": "glsl",
+    ".fs": "glsl",
 }
 
 
