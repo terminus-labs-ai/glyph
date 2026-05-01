@@ -43,6 +43,9 @@ class GlyphServer:
             cfg.embedder.model,
             cfg.embedder.dimensions,
             cfg.embedder.batch_size,
+            batch_delay=cfg.embedder.batch_delay,
+            max_retries=cfg.embedder.max_retries,
+            retry_base_delay=cfg.embedder.retry_base_delay,
         )
         if cfg.reranker:
             self._reranker = LlamaReranker(
@@ -55,6 +58,8 @@ class GlyphServer:
         try:
             yield {}
         finally:
+            if self._embedder:
+                await self._embedder.close()
             await self._store.close()
             logger.info("Glyph MCP server stopped")
 

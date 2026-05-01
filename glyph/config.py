@@ -75,6 +75,11 @@ class EmbedderConfig:
     model: str = "nomic-embed-text"
     dimensions: int = 1024
     batch_size: int = 5
+    batch_delay: float = 0.0
+    max_retries: int = 3
+    retry_base_delay: float = 1.0
+    request_timeout: float = 300.0
+    max_input_chars: int | None = None
 
 
 @dataclass
@@ -312,6 +317,11 @@ def _parse_full_config(raw: dict) -> Config:
         model=emb.get("model", "nomic-embed-text"),
         dimensions=emb.get("dimensions", 512),
         batch_size=emb.get("batch_size", 5),
+        batch_delay=emb.get("batch_delay", 0.0),
+        max_retries=emb.get("max_retries", 3),
+        retry_base_delay=emb.get("retry_base_delay", 1.0),
+        request_timeout=emb.get("request_timeout", 300.0),
+        max_input_chars=emb.get("max_input_chars"),
     )
 
     rer = raw.get("reranker")

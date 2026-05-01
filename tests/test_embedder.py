@@ -331,3 +331,244 @@ class TestOpenAIBatchEmbeddingRegression:
         assert call_count[0] == 1, (
             f"OpenAI endpoint should send 1 batch request, sent {call_count[0]}"
         )
+
+
+class TestRetryAndBackoff:
+    """Tests for exponential backoff retries on transient failures."""
+
+    async def test_retry_on_500_server_error(self):
+        """A 500 response should trigger a retry with exponential backoff."""
+        embedder = LlamaEmbedder(
+            url="http://localhost:11434",
+            model="test-model",
+            dims=DIMS,
+            batch_size=3,
+            max_retries=3,
+            retry_base_delay=0.01,  # fast for tests
+        )
+
+        call_count = [0]
+
+        class _RetrySession:
+            def __init__(self, **kwargs):
+                pass
+
+            def __call__(self, *args, **kwargs):
+                return self
+
+            def post(self, url: str, **kwargs):
+                if "/v1/embeddings" in url:
+                    call_count[0] += 1
+                    if call_count[0] <= 2:
+                        return _AsyncResp(status=500, json_data={"error": "busy"})
+                    return _AsyncResp(
+                        status=200,
+                        json_data={"data": [{"embedding": _make_embedding(42)}]},
+                    )
+                return _AsyncResp(status=404, json_data={})
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                pass
+
+        with patch(
+            "glyph.embedders.llama.aiohttp.ClientSession",
+            _RetrySession(),
+        ):
+            result = await embedder.embed(["text A"])
+
+        assert len(result) == 1
+        assert call_count[0] == 3  # 2 failures + 1 success
+
+    async def test_gives_up_after_max_retries(self):
+        """After max_retries attempts, should return zero vectors."""
+        embedder = LlamaEmbedder(
+            url="http://localhost:11434",
+            model="test-model",
+            dims=DIMS,
+            batch_size=3,
+            max_retries=2,
+            retry_base_delay=0.01,
+        )
+
+        call_count = [0]
+
+        class _AlwaysFailSession:
+            def __init__(self, **kwargs):
+                pass
+
+            def __call__(self, *args, **kwargs):
+                return self
+
+            def post(self, url: str, **kwargs):
+                call_count[0] += 1
+                return _AsyncResp(status=500, json_data={"error": "busy"})
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                pass
+
+        with patch(
+            "glyph.embedders.llama.aiohttp.ClientSession",
+            _AlwaysFailSession(),
+        ):
+            result = await embedder.embed(["text A"])
+
+        assert len(result) == 1
+        assert result[0] == [0.0] * DIMS  # zero vector fallback
+        assert call_count[0] >= 2  # at least max_retries attempts
+
+
+class TestBatchDelay:
+    """Tests for rate limiting between batches."""
+
+    async def test_no_delay_when_batch_delay_is_zero(self):
+        """Default behavior: no delay between batches."""
+        import time
+
+        embedder = LlamaEmbedder(
+            url="http://localhost:11434",
+            model="test-model",
+            dims=DIMS,
+            batch_size=2,
+            batch_delay=0.0,
+        )
+
+        texts = ["a", "b", "c", "d", "e"]  # 3 batches of size 2
+
+        class _FastSession:
+            def __init__(self, **kwargs):
+                pass
+
+            def __call__(self, *args, **kwargs):
+                return self
+
+            def post(self, url: str, **kwargs):
+                return _AsyncResp(
+                    status=200,
+                    json_data={"data": [{"embedding": _make_embedding(1)}]},
+                )
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                pass
+
+        with patch(
+            "glyph.embedders.llama.aiohttp.ClientSession",
+            _FastSession(),
+        ):
+            start = time.monotonic()
+            result = await embedder.embed(texts)
+            elapsed = time.monotonic() - start
+
+        assert len(result) == 5
+        # With no delay and instant mocks, should be very fast
+        assert elapsed < 0.1, f"Should complete quickly without delay, took {elapsed:.3f}s"
+
+
+class TestPersistentSession:
+    """Tests for the persistent ClientSession."""
+
+    async def test_close_cleans_up_session(self):
+        """Calling close() should close the underlying session."""
+        embedder = LlamaEmbedder(
+            url="http://localhost:11434",
+            model="test-model",
+            dims=DIMS,
+            batch_size=1,
+        )
+
+        session_created = []
+
+        class _TrackingSession:
+            def __init__(self, **kwargs):
+                session_created.append(self)
+
+            def __call__(self, *args, **kwargs):
+                return self
+
+            def post(self, url: str, **kwargs):
+                return _AsyncResp(
+                    status=200,
+                    json_data={"data": [{"embedding": _make_embedding(1)}]},
+                )
+
+            @property
+            def closed(self):
+                return getattr(self, "_closed", False)
+
+            async def close(self):
+                self._closed = True
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                pass
+
+        with patch(
+            "glyph.embedders.llama.aiohttp.ClientSession",
+            _TrackingSession,
+        ):
+            await embedder.embed(["test"])
+            assert len(session_created) == 1  # session created
+            assert not session_created[0].closed
+
+            await embedder.close()
+            assert session_created[0].closed  # session closed
+
+    async def test_session_reused_across_batches(self):
+        """The same session should be reused for multiple embed() calls."""
+        session_instances = []
+
+        class _TrackingSession:
+            def __init__(self, **kwargs):
+                session_instances.append(id(self))
+
+            def __call__(self, *args, **kwargs):
+                return self
+
+            def post(self, url: str, **kwargs):
+                return _AsyncResp(
+                    status=200,
+                    json_data={"data": [{"embedding": _make_embedding(1)}]},
+                )
+
+            @property
+            def closed(self):
+                return False
+
+            async def close(self):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                pass
+
+        embedder = LlamaEmbedder(
+            url="http://localhost:11434",
+            model="test-model",
+            dims=DIMS,
+            batch_size=2,
+            batch_delay=0.0,
+        )
+
+        with patch(
+            "glyph.embedders.llama.aiohttp.ClientSession",
+            _TrackingSession,
+        ):
+            # Two batches (4 texts, batch_size=2)
+            await embedder.embed(["a", "b", "c", "d"])
+            # Should have created exactly one session
+            assert len(session_instances) == 1, (
+                f"Expected 1 session, got {len(session_instances)} "
+                f"(session was recreated between batches)"
+            )

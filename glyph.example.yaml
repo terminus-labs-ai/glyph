@@ -7,6 +7,7 @@ embedder:
   model: "qwen3-embedding:4b-cpu"
   dimensions: 512
   batch_size: 5
+  # max_input_chars: 28000  # truncate chunks to ~7000 tokens; prevents crashing the server on large files
 
 # Optional two-stage retrieval reranker (see README "Reranker" section)
 # When configured, search uses embed → pgvector → rerank for higher quality

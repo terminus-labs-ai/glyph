@@ -263,23 +263,28 @@ async def _search(
         cfg.embedder.model,
         cfg.embedder.dimensions,
         cfg.embedder.batch_size,
+        batch_delay=cfg.embedder.batch_delay,
+        max_retries=cfg.embedder.max_retries,
+        retry_base_delay=cfg.embedder.retry_base_delay,
     )
 
-    results = await run_search(
-        store,
-        embedder,
-        reranker,
-        query,
-        source_name=source,
-        source_version=version,
-        chunk_types=chunk_types,
-        parent_name=parent,
-        limit=limit,
-        rerank=use_rerank,
-        n_candidates=n_candidates,
-    )
-
-    await store.close()
+    try:
+        results = await run_search(
+            store,
+            embedder,
+            reranker,
+            query,
+            source_name=source,
+            source_version=version,
+            chunk_types=chunk_types,
+            parent_name=parent,
+            limit=limit,
+            rerank=use_rerank,
+            n_candidates=n_candidates,
+        )
+    finally:
+        await embedder.close()
+        await store.close()
 
     if not results:
         click.echo(f'No results for "{query}"')
