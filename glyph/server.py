@@ -10,6 +10,7 @@ from mcp.server.fastmcp import FastMCP
 
 from glyph.config import load_config, load_global_config, resolve_config_for_repo
 from glyph.embedders.llama import LlamaEmbedder
+from glyph.graph import build_edges_for_group
 from glyph.pipeline import run_export, run_ingest, run_search
 from glyph.rerankers import LlamaReranker
 from glyph.store import PostgresStore
@@ -25,6 +26,7 @@ class GlyphServer:
         self._store: PostgresStore | None = None
         self._embedder: LlamaEmbedder | None = None
         self._reranker: LlamaReranker | None = None
+        self._config = None
         self.mcp = FastMCP(
             "glyph",
             instructions="Glyph knowledge base server. Search API docs, look up classes/functions, and browse indexed sources.",
@@ -36,6 +38,7 @@ class GlyphServer:
     @asynccontextmanager
     async def _lifespan(self, server: FastMCP):
         cfg = load_config(self._config_path)
+        self._config = cfg
         self._store = PostgresStore(cfg.database.url, cfg.embedder.dimensions)
         await self._store.connect()
         self._embedder = LlamaEmbedder(
@@ -121,7 +124,11 @@ class GlyphServer:
                 filters = _describe_filters(source=source, version=version, parent=parent, chunk_types=chunk_types)
                 return f"No results found for \"{query}\"{filters}"
 
-            response = _format_search_results(results)
+            # Fetch edge summaries for all result chunks
+            chunk_ids = [r["id"] for r in results if r.get("id")]
+            edge_summary = await self._store.get_edge_summary(chunk_ids) if chunk_ids else {}
+
+            response = _format_search_results(results, edge_summary=edge_summary)
             if reranker_fallback:
                 response = "Note: rerank was requested but no reranker configured; falling back to hybrid search.\n\n" + response
             return response
@@ -140,7 +147,11 @@ class GlyphServer:
             if not result:
                 return f"No chunk found with qualified_name \"{qualified_name}\""
 
-            return _format_chunk_detail(result)
+            # Fetch edge summary for this chunk
+            chunk_id = result.get("id")
+            edge_summary = await self._store.get_edge_summary([chunk_id]) if chunk_id else {}
+
+            return _format_chunk_detail(result, edge_summary=edge_summary)
 
         @self.mcp.tool()
         async def get_context(
@@ -168,7 +179,11 @@ class GlyphServer:
                 filters = _describe_filters(source=source, version=version)
                 return f"No chunks found for parent \"{parent_name}\"{filters}"
 
-            return _format_context(parent_name, chunks)
+            # Fetch edge summaries for all chunks
+            chunk_ids = [c["id"] for c in chunks if c.get("id")]
+            edge_summary = await self._store.get_edge_summary(chunk_ids) if chunk_ids else {}
+
+            return _format_context(parent_name, chunks, edge_summary=edge_summary)
 
         @self.mcp.tool()
         async def list_sources() -> str:
@@ -317,6 +332,79 @@ class GlyphServer:
                 logger.exception("Reindex failed")
                 return f"Error during reindex: {e}"
 
+        @self.mcp.tool()
+        async def get_related(
+            qualified_name: str,
+            edge_type: str | None = None,
+            source: str | None = None,
+            limit: int = 10,
+        ) -> str:
+            """Find chunks related to a given chunk via cross-source graph edges.
+
+            Args:
+                qualified_name: The qualified name of the chunk to find relations for
+                edge_type: Filter by edge type (e.g., "references", "inherits")
+                source: Filter related items by source name
+                limit: Number of results to return (default 10, max 50)
+            """
+            if not self._store:
+                return "Error: Server not initialized"
+
+            chunk = await self._store.get_by_qualified_name(qualified_name)
+            if not chunk:
+                return f"No chunk found with qualified_name \"{qualified_name}\""
+
+            limit = max(1, min(limit, 50))
+
+            results = await self._store.get_related(
+                chunk["id"],
+                edge_type=edge_type,
+                limit=limit,
+            )
+
+            if not results:
+                return f"No related items found for \"{qualified_name}\""
+
+            lines = [f"# Related to {qualified_name}\n"]
+            for r in results:
+                lines.append(
+                    f"- **{r['qualified_name']}** [{r['edge_type']}] "
+                    f"({r['chunk_type']}, {r['source_name']})"
+                )
+                if r.get("summary"):
+                    lines.append(f"  {r['summary']}")
+            return "\n".join(lines)
+
+        @self.mcp.tool()
+        async def link_sources(
+            group: str | None = None,
+        ) -> str:
+            """Rebuild cross-source graph edges for source groups.
+
+            Args:
+                group: Specific group name to rebuild edges for. If omitted,
+                       rebuilds edges for all groups in the config.
+            """
+            if not self._store:
+                return "Error: Server not initialized"
+            if not self._config:
+                return "Error: No config loaded"
+
+            if group:
+                count = await build_edges_for_group(self._store, group, self._config)
+                return f"Built {count} edges for group '{group}'"
+            else:
+                groups = {s.group for s in self._config.sources if s.group is not None}
+                if not groups:
+                    return "No source groups found in config"
+                total = 0
+                summaries = []
+                for g in sorted(groups):
+                    count = await build_edges_for_group(self._store, g, self._config)
+                    summaries.append(f"  {g}: {count} edges")
+                    total += count
+                return f"Built {total} edges across {len(groups)} groups:\n" + "\n".join(summaries)
+
     def _register_resources(self) -> None:
         @self.mcp.resource("glyph://sources")
         async def sources_resource() -> str:
@@ -372,6 +460,8 @@ class GlyphServer:
         if transport in ("sse", "streamable-http"):
             self.mcp.settings.host = host
             self.mcp.settings.port = port
+            if host == "0.0.0.0":
+                self.mcp.settings.transport_security.enable_dns_rebinding_protection = False
         self.mcp.run(transport)
 
 
@@ -404,7 +494,24 @@ def _describe_filters(**kwargs: Any) -> str:
     return f" (filters: {', '.join(parts)})" if parts else ""
 
 
-def _format_search_results(results: list[dict[str, Any]]) -> str:
+def _format_edge_line(edges: list[dict]) -> str:
+    """Format edge summary into a single line like '**Related:** 2 linked items from godot-tutorials'."""
+    if not edges:
+        return ""
+    # Group by source name
+    by_source: dict[str, int] = defaultdict(int)
+    for e in edges:
+        by_source[e["source_name"]] += 1
+    parts = []
+    for source_name, count in sorted(by_source.items()):
+        parts.append(f"{count} linked items from {source_name}")
+    return "**Related:** " + ", ".join(parts)
+
+
+def _format_search_results(
+    results: list[dict[str, Any]],
+    edge_summary: dict | None = None,
+) -> str:
     lines = []
     for r in results:
         score = r.get("score", 0)
@@ -421,6 +528,11 @@ def _format_search_results(results: list[dict[str, Any]]) -> str:
             lines.append(f"**Rerank Score:** {rerank_score:.3f}")
         if r.get("parent_name"):
             lines.append(f"**Parent:** {r['parent_name']}")
+        # Edge summary
+        if edge_summary and r.get("id") in edge_summary:
+            edge_line = _format_edge_line(edge_summary[r["id"]])
+            if edge_line:
+                lines.append(edge_line)
         lines.append("")
         if r.get("summary"):
             lines.append(r["summary"])
@@ -430,7 +542,10 @@ def _format_search_results(results: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def _format_chunk_detail(chunk: dict[str, Any]) -> str:
+def _format_chunk_detail(
+    chunk: dict[str, Any],
+    edge_summary: dict | None = None,
+) -> str:
     lines = [
         f"# {chunk['qualified_name']}",
         "",
@@ -441,6 +556,11 @@ def _format_chunk_detail(chunk: dict[str, Any]) -> str:
     metadata = _parse_metadata(chunk.get("metadata", {}))
     if metadata.get("inherits"):
         lines.append(f"**Inherits:** {metadata['inherits']}")
+    # Edge summary
+    if edge_summary and chunk.get("id") in edge_summary:
+        edge_line = _format_edge_line(edge_summary[chunk["id"]])
+        if edge_line:
+            lines.append(edge_line)
     lines.append("")
     if chunk.get("summary"):
         lines.append(f"*{chunk['summary']}*")
@@ -449,7 +569,11 @@ def _format_chunk_detail(chunk: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _format_context(parent_name: str, chunks: list[dict[str, Any]]) -> str:
+def _format_context(
+    parent_name: str,
+    chunks: list[dict[str, Any]],
+    edge_summary: dict | None = None,
+) -> str:
     lines = [f"# {parent_name}\n"]
 
     overview = _find_overview(chunks)
@@ -461,6 +585,12 @@ def _format_context(parent_name: str, chunks: list[dict[str, Any]]) -> str:
         lines.append(f"**Source:** {src.strip()}\n")
         lines.append(overview.get("content", ""))
         lines.append("")
+        # Edge summary for overview chunk
+        if edge_summary and overview.get("id") in edge_summary:
+            edge_line = _format_edge_line(edge_summary[overview["id"]])
+            if edge_line:
+                lines.append(edge_line)
+                lines.append("")
 
     by_type: dict[str, list[dict]] = defaultdict(list)
     for c in chunks:
@@ -488,6 +618,11 @@ def _format_context(parent_name: str, chunks: list[dict[str, Any]]) -> str:
             if m.get("summary"):
                 lines.append(f"*{m['summary']}*\n")
             lines.append(m.get("content", ""))
+            # Edge summary for member chunk
+            if edge_summary and m.get("id") in edge_summary:
+                edge_line = _format_edge_line(edge_summary[m["id"]])
+                if edge_line:
+                    lines.append(edge_line)
             lines.append("")
 
     return "\n".join(lines)

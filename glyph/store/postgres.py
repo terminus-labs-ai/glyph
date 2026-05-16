@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS sources (
     origin TEXT NOT NULL,
     config JSONB DEFAULT '{{}}',
     dimensions INTEGER DEFAULT 0,
+    "group" TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
     UNIQUE (name, version)
@@ -68,6 +69,19 @@ CREATE TABLE IF NOT EXISTS chunks (
 CREATE INDEX IF NOT EXISTS idx_chunks_parent_type ON chunks (parent_name, chunk_type);
 CREATE INDEX IF NOT EXISTS idx_chunks_source ON chunks (source_name, source_version);
 CREATE INDEX IF NOT EXISTS idx_chunks_qualified ON chunks (qualified_name);
+
+CREATE TABLE IF NOT EXISTS edges (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    source_chunk_id UUID NOT NULL REFERENCES chunks(id) ON DELETE CASCADE,
+    target_chunk_id UUID NOT NULL REFERENCES chunks(id) ON DELETE CASCADE,
+    edge_type TEXT NOT NULL DEFAULT 'references',
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(source_chunk_id, target_chunk_id, edge_type)
+);
+
+CREATE INDEX IF NOT EXISTS idx_edges_source ON edges (source_chunk_id);
+CREATE INDEX IF NOT EXISTS idx_edges_target ON edges (target_chunk_id);
+CREATE INDEX IF NOT EXISTS idx_edges_type ON edges (edge_type);
 """
 
 VECTOR_INDEX_SQL = """
@@ -124,39 +138,27 @@ class PostgresStore:
             await conn.execute(sql)
         logger.info("Vector index created")
 
-    async def upgrade_schema(self) -> None:
-        """Add FTS column and index. Idempotent -- safe to run multiple times."""
-        async with self._pool.acquire() as conn:
-            await conn.execute("""
-                ALTER TABLE chunks ADD COLUMN IF NOT EXISTS fts tsvector
-                    GENERATED ALWAYS AS (
-                        setweight(to_tsvector('english', coalesce(qualified_name, '')), 'A') ||
-                        setweight(to_tsvector('english', coalesce(heading, '')), 'A') ||
-                        setweight(to_tsvector('english', coalesce(summary, '')), 'B') ||
-                        setweight(to_tsvector('english', coalesce(content, '')), 'C')
-                    ) STORED
-            """)
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_chunks_fts ON chunks USING GIN (fts)
-            """)
-        logger.info("Schema upgraded: FTS column and GIN index applied")
+
 
     async def upsert_source(self, source: Source) -> uuid.UUID:
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
-                INSERT INTO sources (id, name, version, source_type, origin, config, dimensions)
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                INSERT INTO sources (id, name, version, source_type, origin, config, dimensions, "group")
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                 ON CONFLICT (name, version) DO UPDATE SET
                     source_type = EXCLUDED.source_type,
                     origin = EXCLUDED.origin,
+                    dimensions = EXCLUDED.dimensions,
                     config = EXCLUDED.config,
+                    "group" = EXCLUDED."group",
                     updated_at = NOW()
                 RETURNING id
                 """,
                 source.id, source.name, source.version,
-                source.source_type, source.origin, 
+                source.source_type, source.origin,
                 json.dumps(source.config), source.dimensions,
+                source.group,
             )
             return row["id"]
 
@@ -186,6 +188,25 @@ class PostgresStore:
                 doc.doc_type.value, doc.raw_content, doc.content_hash,
             )
             return row["id"], True
+
+    
+    async def get_all_document_paths(self, source_id: uuid.UUID) -> list[str]:
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT path FROM documents WHERE source_id = $1",
+                source_id
+            )
+            return [r["path"] for r in rows]
+
+    async def delete_documents_by_path(self, source_id: uuid.UUID, paths: list[str]) -> int:
+        if not paths:
+            return 0
+        async with self._pool.acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM documents WHERE source_id = $1 AND path = ANY($2::text[])",
+                source_id, paths
+            )
+            return int(result.split()[-1])
 
     async def delete_chunks_for_document(self, document_id: uuid.UUID) -> int:
         async with self._pool.acquire() as conn:
@@ -478,6 +499,131 @@ class PostgresStore:
                 source_name, source_version,
             )
             return [dict(r) for r in rows]
+
+    # -- Edge methods --
+
+    async def insert_edges(self, edges: list[tuple[uuid.UUID, uuid.UUID, str]]) -> int:
+        if not edges:
+            return 0
+        async with self._pool.acquire() as conn:
+            await conn.executemany(
+                """
+                INSERT INTO edges (source_chunk_id, target_chunk_id, edge_type)
+                VALUES ($1, $2, $3)
+                ON CONFLICT DO NOTHING
+                """,
+                edges,
+            )
+            return len(edges)
+
+    async def delete_edges_for_source(self, source_name: str, source_version: str) -> int:
+        async with self._pool.acquire() as conn:
+            result = await conn.execute(
+                """
+                DELETE FROM edges
+                WHERE source_chunk_id IN (
+                    SELECT id FROM chunks
+                    WHERE source_name = $1 AND source_version = $2
+                )
+                OR target_chunk_id IN (
+                    SELECT id FROM chunks
+                    WHERE source_name = $1 AND source_version = $2
+                )
+                """,
+                source_name, source_version,
+            )
+            return int(result.split()[-1])
+
+    async def get_related(
+        self,
+        chunk_id: uuid.UUID,
+        direction: str = "both",
+        edge_type: str | None = None,
+        limit: int = 10,
+    ) -> list[dict]:
+        limit = max(1, min(50, limit))
+        params: list[Any] = [chunk_id]
+        idx = 2
+
+        if direction == "outgoing":
+            join_sql = """
+                SELECT c.qualified_name, c.heading, c.source_name, c.source_version,
+                       c.chunk_type, e.edge_type, c.summary
+                FROM edges e
+                JOIN chunks c ON c.id = e.target_chunk_id
+                WHERE e.source_chunk_id = $1
+            """
+        elif direction == "incoming":
+            join_sql = """
+                SELECT c.qualified_name, c.heading, c.source_name, c.source_version,
+                       c.chunk_type, e.edge_type, c.summary
+                FROM edges e
+                JOIN chunks c ON c.id = e.source_chunk_id
+                WHERE e.target_chunk_id = $1
+            """
+        else:  # both
+            join_sql = """
+                SELECT c.qualified_name, c.heading, c.source_name, c.source_version,
+                       c.chunk_type, e.edge_type, c.summary
+                FROM edges e
+                JOIN chunks c ON c.id = CASE
+                    WHEN e.source_chunk_id = $1 THEN e.target_chunk_id
+                    ELSE e.source_chunk_id
+                END
+                WHERE e.source_chunk_id = $1 OR e.target_chunk_id = $1
+            """
+
+        if edge_type is not None:
+            join_sql += f" AND e.edge_type = ${idx}"
+            params.append(edge_type)
+            idx += 1
+
+        join_sql += f" LIMIT ${idx}"
+        params.append(limit)
+
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(join_sql, *params)
+            return [dict(r) for r in rows]
+
+    async def get_edge_summary(
+        self, chunk_ids: list[uuid.UUID]
+    ) -> dict[uuid.UUID, list[dict]]:
+        if not chunk_ids:
+            return {}
+
+        sql = """
+            SELECT
+                CASE
+                    WHEN e.source_chunk_id = ANY($1::uuid[]) THEN e.source_chunk_id
+                    ELSE e.target_chunk_id
+                END AS chunk_id,
+                c.qualified_name,
+                c.source_name,
+                e.edge_type,
+                CASE
+                    WHEN e.source_chunk_id = ANY($1::uuid[]) THEN 'outgoing'
+                    ELSE 'incoming'
+                END AS direction
+            FROM edges e
+            JOIN chunks c ON c.id = CASE
+                WHEN e.source_chunk_id = ANY($1::uuid[]) THEN e.target_chunk_id
+                ELSE e.source_chunk_id
+            END
+            WHERE e.source_chunk_id = ANY($1::uuid[])
+               OR e.target_chunk_id = ANY($1::uuid[])
+        """
+
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(sql, chunk_ids)
+
+        result: dict[uuid.UUID, list[dict]] = {}
+        for row in rows:
+            r = dict(row)
+            cid = r.pop("chunk_id")
+            if cid not in result:
+                result[cid] = []
+            result[cid].append(r)
+        return result
 
     async def get_stats(self) -> dict[str, Any]:
         async with self._pool.acquire() as conn:

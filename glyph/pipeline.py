@@ -11,6 +11,7 @@ from typing import Any
 
 from glyph.config import Config, SourceConfig
 from glyph.domain.models import DocType, Source
+from glyph.graph import build_edges_for_group
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +80,9 @@ async def run_ingest(
       summary["sources"].append(source_summary)
       summary["total_documents"] += source_summary["documents"]
       summary["total_chunks"] += source_summary["chunks"]
+
+      if src_cfg.group is not None:
+        await build_edges_for_group(store, src_cfg.group, config)
 
   finally:
     if embedder:
@@ -171,6 +175,23 @@ async def _ingest_source(
       ]
       logger.info(f"Filtered to {len(documents)} documents matching file filter")
 
+    db_paths = set(await store.get_all_document_paths(source_id))
+    new_doc_paths = {d.path for d in documents}
+    paths_to_delete = []
+
+    if file_filter:
+      source_root = Path(ing_cfg.settings.get("path", ".")).resolve()
+      for db_path in db_paths:
+        abs_db_path = str((source_root / db_path).resolve())
+        if abs_db_path in normalized_filter and db_path not in new_doc_paths:
+          paths_to_delete.append(db_path)
+    else:
+      paths_to_delete = [p for p in db_paths if p not in new_doc_paths]
+
+    if paths_to_delete:
+      logger.info(f"Deleting {len(paths_to_delete)} stale documents")
+      await store.delete_documents_by_path(source_id, paths_to_delete)
+
     # Build chunkers
     api_chunker = APIChunker(src_cfg.name, src_cfg.version)
     text_chunker = TextChunker(src_cfg.name, src_cfg.version)
@@ -197,6 +218,10 @@ async def _ingest_source(
       )
 
     total_chunks = 0
+    # Deleting old chunks removes edges referencing them (ON DELETE CASCADE)
+    # but we still need to clear outgoing edges for old chunks if we do any updates,
+    # or just rebuild the group's edges at the end anyway, which we do.
+    
     for doc in documents:
       doc.source_id = source_id
       doc_id, changed = await store.upsert_document(doc)

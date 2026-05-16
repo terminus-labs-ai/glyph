@@ -442,15 +442,16 @@ class TestBatchDelay:
 
         class _FastSession:
             def __init__(self, **kwargs):
-                pass
+                self.closed = False
 
             def __call__(self, *args, **kwargs):
                 return self
 
             def post(self, url: str, **kwargs):
+                num_inputs = len(kwargs.get("json", {}).get("input", [])) if "json" in kwargs else 1
                 return _AsyncResp(
                     status=200,
-                    json_data={"data": [{"embedding": _make_embedding(1)}]},
+                    json_data={"data": [{"embedding": _make_embedding(1)} for _ in range(num_inputs if num_inputs > 0 else 1)]},
                 )
 
             async def __aenter__(self):
@@ -494,9 +495,10 @@ class TestPersistentSession:
                 return self
 
             def post(self, url: str, **kwargs):
+                num_inputs = len(kwargs.get("json", {}).get("input", [])) if "json" in kwargs else 1
                 return _AsyncResp(
                     status=200,
-                    json_data={"data": [{"embedding": _make_embedding(1)}]},
+                    json_data={"data": [{"embedding": _make_embedding(1)} for _ in range(num_inputs if num_inputs > 0 else 1)]},
                 )
 
             @property
@@ -535,9 +537,10 @@ class TestPersistentSession:
                 return self
 
             def post(self, url: str, **kwargs):
+                num_inputs = len(kwargs.get("json", {}).get("input", [])) if "json" in kwargs else 1
                 return _AsyncResp(
                     status=200,
-                    json_data={"data": [{"embedding": _make_embedding(1)}]},
+                    json_data={"data": [{"embedding": _make_embedding(1)} for _ in range(num_inputs if num_inputs > 0 else 1)]},
                 )
 
             @property

@@ -111,6 +111,7 @@ class SourceConfig:
     name: str
     version: str
     ingestors: list[IngestorConfig]
+    group: str | None = None
 
 
 @dataclass
@@ -344,6 +345,7 @@ def _parse_full_config(raw: dict) -> Config:
             name=src["name"],
             version=src["version"],
             ingestors=ingestors,
+            group=src.get("group"),
         ))
 
     out = raw.get("output", {})
@@ -392,7 +394,7 @@ def _parse_repo_config(raw: dict, repo_path: Path) -> SourceConfig:
 
         ingestors.append(IngestorConfig(type=ing_type, settings=settings))
 
-    return SourceConfig(name=name, version=version, ingestors=ingestors)
+    return SourceConfig(name=name, version=version, ingestors=ingestors, group=raw.get("group"))
 
 
 def _resolve_version_auto(repo_path: Path) -> str:

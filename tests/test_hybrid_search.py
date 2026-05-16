@@ -298,38 +298,7 @@ class TestHybridSearch:
             assert "score" in r
 
 
-# --- Group 4: upgrade_schema() ---
-
-class TestUpgradeSchema:
-    async def test_executes_migration_sql(self, mock_pool):
-        from glyph.store.postgres import PostgresStore
-        pool, conn = mock_pool
-
-        store = PostgresStore.__new__(PostgresStore)
-        store._pool = pool
-
-        await store.upgrade_schema()
-        assert conn.execute.call_count == 2
-        calls = [str(c) for c in conn.execute.call_args_list]
-        sql_combined = " ".join(calls)
-        assert "fts tsvector" in sql_combined
-        assert "idx_chunks_fts" in sql_combined
-
-    async def test_idempotent(self, mock_pool):
-        from glyph.store.postgres import PostgresStore
-        pool, conn = mock_pool
-
-        store = PostgresStore.__new__(PostgresStore)
-        store._pool = pool
-
-        await store.upgrade_schema()
-        first_count = conn.execute.call_count
-
-        await store.upgrade_schema()
-        assert conn.execute.call_count == first_count * 2  # Same calls both times
-
-
-# --- Group 5: MCP search tool integration ---
+# --- Group 4: MCP search tool integration ---
 
 class TestSearchToolHybrid:
     async def test_uses_hybrid_search(self, mock_store, mock_embedder):
