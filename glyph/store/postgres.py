@@ -469,14 +469,23 @@ class PostgresStore:
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 """
+                WITH doc_counts AS (
+                    SELECT source_id, COUNT(id) AS document_count
+                    FROM documents
+                    GROUP BY source_id
+                ),
+                chunk_counts AS (
+                    SELECT source_name, source_version, COUNT(id) AS chunk_count
+                    FROM chunks
+                    GROUP BY source_name, source_version
+                )
                 SELECT s.name, s.version, s.source_type, s.origin,
-                       COUNT(DISTINCT d.id) AS document_count,
-                       COUNT(DISTINCT c.id) AS chunk_count
+                       COALESCE(d.document_count, 0) AS document_count,
+                       COALESCE(c.chunk_count, 0) AS chunk_count
                 FROM sources s
-                LEFT JOIN documents d ON d.source_id = s.id
-                LEFT JOIN chunks c ON c.source_name = s.name
+                LEFT JOIN doc_counts d ON d.source_id = s.id
+                LEFT JOIN chunk_counts c ON c.source_name = s.name
                     AND c.source_version = s.version
-                GROUP BY s.id, s.name, s.version, s.source_type, s.origin
                 ORDER BY s.name, s.version
                 """
             )
